@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+
+# mkdistro <preset>
+
+# global variables
+preset_path=""
+
+# preset variables
+arch=""
+boot_type=""
+boot_partition_layout=""
+boot_partition_gpt=""
+mkdyifs_preset=""
+image_size=""
+image_format=""
+image_inodes=""
+repositories=()
+declare -A local_repositories=()
+packages=()
+keys=()
+users=""
+groups=""
+openrc_services=()
+declare -A openrc_confd=()
+
+get_app_cache() {
+  local app_name="$1"
+  local base_cache
+
+  if [[ -n "${XDG_CACHE_HOME}" ]]; then
+    base_cache="${XDG_CACHE_HOME}"
+  elif [[ "$(uname -s)" = "Darwin" ]]; then
+    base_cache="${HOME}/Library/Caches"
+  else
+    base_cache="${HOME}/.cache"
+  fi
+
+  local app_cache_dir="${base_cache}/${app_name}"
+  mkdir -p "${app_cache_dir}"
+
+  echo "${app_cache_dir}"
+}
+
+to_bytes() {
+  numfmt --format='%.0f' --to-unit=B "${1}"
+}
+
+usage() {
+  echo ""
+}
+
+msg() {
+  printf '[mkdistro] %s\n' "${1}"
+}
+
+msg_error() {
+  printf '[mkdistro] ERROR: %s\n' "${1}"
+  if ((${2} > 0)); then
+    exit "${2}"
+  fi
+}
+
+msg_fatal() {
+  printf '[mkdistro] FATAL: %s\n' "${1}"
+  return 1
+}
+
+assert() {
+  local var_name="${1}"
+  shift
+  local var_value="${!var_name}"
+
+  if [[ -z "${var_value}" ]]; then
+    msg_error "'${var_name}' is empty or unset" 1
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+
+  local validator="${1}"
+  shift
+
+  if ! "${validator}" "${var_value}" "$@"; then
+    msg_error "'${var_name}' = '${var_value}' failed ${validator[$*]}" 1
+  fi
+
+  return 0
+}
+
+assert_arr() {
+  local name="$1"
+  shift
+  local -a arr=("${!name[@]}")
+
+  if [[ ${#arr[@]} -eq 0 ]]; then
+    msg_error "array '${name}' is empty or unset" 1
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+
+  local validator="${1}"
+  shift
+
+  if ! "${validator}" "$@" "${arr[@]}"; then
+    msg_error "array '${name}' failed ${validator}" 1
+  fi
+  return 0
+}
+
+# Every key is an absolute path with no internal spaces.
+_check_path_abs() {
+  local val="${1}"
+  if [[ ! "${val}" =~ ^/[^[:space:]]*$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+assert_arr_keys() {
+  local name="$1"
+  local -n array_ref="${name}"
+  shift
+  local -a keys=("${!array_ref[@]}")
+
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    msg_error "keys of '${name}' is empty or unset" 1
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+
+  local validator="$1"
+  shift
+  local k
+
+  for k in "${keys[@]}"; do
+    if ! "${validator}" "${k}" "${@}"; then
+      msg_error "keys '${name}[\"${k}\"]' failed ${validator}" 1
+    fi
+  done
+  return 0
+}
+
+_check_oneof() {
+  local val="${1}"
+  shift
+  local opt
+  for opt in "${@}"; do
+    [[ "${val}" == "${opt}" ]] && return 0
+  done
+  return 1
+}
+
+assert_oneof() {
+  local var_name="${1}"
+  shift
+  assert "${var_name}" _check_oneof "$@"
+}
+
+_check_num_or_auto() {
+  local v="$1"
+  local s="${2-auto}"
+  [[ "${v}" == "${s}" ]] && return 0
+  [[ "${v}" =~ ^-?[0-9]+$ ]] && return 0
+  return 1
+}
+assert_num_or_auto() {
+  local n="$1"
+  shift
+  assert "${n}" _check_num_or_auto "$@"
+}
+
+_check_size_or_auto() {
+  local v="$1"
+  local s="${2-auto}"
+  [[ "${v}" == "${s}" ]] && return 0
+  [[ "${v}" =~ ^[0-9]+[GMT]$ ]] && return 0
+  return 1
+}
+assert_size_or_auto() {
+  local n="$1"
+  shift
+  assert "${n}" _check_size_or_auto "$@"
+}
+
+assert_empty() {
+  local var_name="$1"
+  shift
+  if [[ -n "${!var_name}" ]]; then
+    msg_error "'${var_name}' = '${!var_name}' should be empty" 1
+  fi
+  return 0
+}
+
+build_image() {
+  echo "TODO"
+}
+
+validate_preset() {
+  assert_oneof arch "x86_64" "aarch64":
+  assert_oneof boot_type "uefi" "custom"
+  assert_size_or_auto boot_partition_size
+
+  if [[ "${boot_type}" == "custom" ]]; then
+    assert boot_partition_layout
+    assert boot_partition_gpt
+  else
+    assert_empty boot_partition_layout
+    assert_empty boot_partition_gpt
+  fi
+
+  assert_size_or_auto image_size
+  assert_oneof image_format "iso" "qcow2"
+  assert_num_or_auto image_inodes
+
+  assert_arr repositories
+  assert_arr_keys local_repositories _check_path_abs
+
+  assert_arr keys
+  assert_arr packages
+
+  assert users
+  assert groups
+
+  assert_arr openrc_services
+  #assert_arr_keys openrc_confd
+}
+
+read_preset() {
+  if [[ ! -d "${preset_path}" ]]; then
+    msg_error "Preset at '${preset_path}' does not exists" 1
+  elif [[ ! -e "${preset_path}/preset.sh" ]]; then
+    msg_error "Preset at '${preset_path}' does not contain a 'preset.sh' file" 1
+  fi
+
+  cd -- "${preset_path}" || msg_fatal "failed to cd to '${preset_path}'"
+
+  # shellcheck source=presets/x86-64-qemu/preset.sh
+  . "${preset_path}/preset.sh" || msg_fatal "Can't source '${preset_path}/preset.sh'"
+}
+
+if (($# < 1)); then
+  echo "No preset provided"
+fi
+
+preset_path="$(realpath "${1}")"
+
+read_preset
+validate_preset
+build_image

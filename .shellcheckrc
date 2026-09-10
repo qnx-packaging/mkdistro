@@ -1,0 +1,4 @@
+enable=require-variable-braces
+enable=require-double-brackets
+enable=avoid-nullary-conditions
+enable=quote-safe-variables
