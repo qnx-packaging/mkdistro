@@ -4,6 +4,11 @@
 
 # global variables
 preset_path=""
+preset_name=""
+fakeroot_save=""
+scripts_dir="$(realpath ./scripts)"
+tmp_dir=""
+apk_root=""
 
 # preset variables
 arch=""
@@ -196,7 +201,44 @@ assert_empty() {
   return 0
 }
 
+make_apk_root() {
+  local args=()
+  args+=("--root" "${apk_root}")
+  args+=("--arch" "${arch}")
+  args+=("--lockfile" "/tmp/asdf.lock")
+
+  local repo=""
+  for repo in "${repositories[@]}"; do
+    args+=("--repo" "${repo}")
+  done
+
+  local key=""
+  for key in "${keys[@]}"; do
+    args+=("--key" "${key}")
+  done
+  for repo in "${local_repositories[@]}"; do
+    args+=("--repo" "$(realpath "${repo}")")
+  done
+
+  fakeroot -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
+
+  local repo_path=""
+  msg "copying local repositories"
+  for key in "${!local_repositories[@]}"; do
+    repo="${local_repositories[${key}]}"
+    repo_path="$(realpath -m "${key}")"
+
+    msg "copying \"${repo}\" to \"<apk-root>${key}\""
+
+    sed -i "s|""${repo}""|${key}|g" "${apk_root}/etc/apk/repositories"
+    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- mkdir -p "${apk_root}/${repo_path}"
+    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- cp -r "${repo}/${arch}" "${apk_root}/${repo_path}/${arch}"
+  done
+}
+
 build_image() {
+  make_apk_root
+
   echo "TODO"
 }
 
@@ -248,6 +290,10 @@ if (($# < 1)); then
 fi
 
 preset_path="$(realpath "${1}")"
+preset_name="$(basename "${preset_path}")"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mkdistro-${preset_name}.XXXXXX")"
+fakeroot_save="${tmp_dir}/apkroot-fakeroot.save"
+apk_root="${tmp_dir}/apkroot"
 
 read_preset
 validate_preset

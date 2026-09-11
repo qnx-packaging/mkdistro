@@ -26,22 +26,42 @@ repositories=(
 )
 
 local_repositories=(
-  ["/opt/qsc-apk/qnx-core"]="~/.cache/qsc-apk/8.0.5/qnx-core"
-  ["/opt/qsc-apk/qnx-extra"]="~/.cache/qsc-apk/8.0.5/qnx-extra"
+  ["/var/local/mkdistro/qsc-apk/qnx-core"]="$HOME/.cache/qsc-apk/8.0.5/qnx-core"
+  ["/var/local/mkdistro/qsc-apk/qnx-extra"]="$HOME/.cache/qsc-apk/8.0.5/qnx-extra"
 )
 
-#TODO: how do deal with keys
 keys=(
   "https://repo.oss.qnx.com/keys/qnxosd.rsa.pub"
-  "abuild:/default"
+  "abuild://default"
 )
 
 packages=(
-  # Base
-  base
-  # Graphics
-  asdf
+  # System Base & Core Utilities
+  filesystem apk-tools bash bash-completion sed grep
+  gzip bzip2 xz tar sudo nano ncurses-terminfo
+  python3 openrc
+
+  # QNX Core & System Services
+  qnx-base qnx-os-services qnx-slogger2 qnx-utils
+  qnx-fs-notify qnx-fs-core qnx-fs-qnx6
+
+  # QNX Drivers & Virtualization
+  qnx-random qnx-random-virtio qnx-devc-virtio
+  qnx-devb-virtio qnx-devb-ram
+
+  # QNX Hardware & PCI
+  qnx-libpci qnx-libqh qnx-pci-server qnx-pci-compat
+  qnx-pci-hw-intel qnx-pci-strings qnx-pci-debug
+
+  # Networking & Connectivity
+  qnx-io-sock qnx-io-sock-pci qnx-io-sock-virtio
+  qnx-netutils dhcpcd openresolv openssh
+
+  # Security, Crypto & Certificates
+  qnx-security qnx-crypto qnx-crypto-openssl3
+  ca-certificates ca-certificates-mozilla
 )
+
 users="
 sshd:x:15:15:sshd:/var/chroot/sshd:/bin/false
 qnx:everywhere:1000:1000::/var/home/qnx:/bin/bash
