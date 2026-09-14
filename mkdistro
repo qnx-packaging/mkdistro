@@ -212,6 +212,18 @@ assert_empty() {
   return 0
 }
 
+copy_overlay() {
+  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- install -d -m0775 -o 0 -g 0 -- "${apk_root}"
+
+  if [[ -d "${preset_path}/overlay" ]]; then
+    msg "Copying custom overlay"
+    cp -afv --no-preserve=ownership,mode -- "${preset_path}/overlay/." "${apk_root}"
+
+    #TODO: file permissions
+  fi
+
+}
+
 configure_openrc() {
   local openrc_service=""
   # Enable top level services
@@ -270,8 +282,8 @@ make_apk_root() {
 }
 
 build_image() {
+  copy_overlay
   make_apk_root
-
   configure_openrc
 
   echo "TODO"

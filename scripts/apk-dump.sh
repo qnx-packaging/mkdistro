@@ -79,11 +79,7 @@ if ! apk_root=$(realpath "${apk_root}"); then
   msg "Invalid path for root (${apk_root})!"
   exit 1
 elif ! [[ -d ${apk_root} ]]; then
-  echo "here"
   mkdir "${apk_root}"
-else
-  echo "${apk_root}/*"
-  rm -rf "${apk_root}"
 fi
 
 #TODO: lets not have to do this here but update the packaging
