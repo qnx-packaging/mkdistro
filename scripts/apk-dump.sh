@@ -89,10 +89,9 @@ fi
 #TODO: lets not have to do this here but update the packaging
 # The essential files before running apk
 mkdir -p "${apk_root}"/tmp
-mkdir -pm 755 "${apk_root}"/usr
-mkdir -pm 755 "${apk_root}"/usr/lib
-mkdir -pm 755 "${apk_root}"/usr/bin
-mkdir -pm 755 "${apk_root}"/etc
+install -d -m 755 "${apk_root}/usr/lib"
+install -d -m 755 "${apk_root}/usr/bin"
+install -d -m 755 "${apk_root}/etc"
 cd "${apk_root}"
 ln -s usr/lib lib
 ln -s usr/bin bin
@@ -130,7 +129,7 @@ for key_url in "${apk_keys[@]}"; do
     ;;
   "file")
     file_path="${key_url#file://}"
-    cp -r ${file_path} "${apk_root}"/etc/apk/keys/"$(basename "${file_path}")"
+    cp -r "${file_path}" "${apk_root}"/etc/apk/keys/"$(basename "${file_path}")"
     ;;
   esac
 done

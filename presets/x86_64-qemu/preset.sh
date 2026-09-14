@@ -21,13 +21,11 @@ repositories=(
   "https://repo.oss.qnx.com/8.0.3/extra"
   "https://repo.oss.qnx.com/8.0.5/core"
   "https://repo.oss.qnx.com/8.0.5/extra"
-  "https://repo.qa.oss.qnx.com/8.0.5/qnx-core"
-  "https://repo.qa.oss.qnx.com/8.0.5/qnx-extra"
 )
 
 local_repositories=(
-  ["/var/local/mkdistro/qsc-apk/qnx-core"]="$HOME/.cache/qsc-apk/8.0.5/qnx-core"
-  ["/var/local/mkdistro/qsc-apk/qnx-extra"]="$HOME/.cache/qsc-apk/8.0.5/qnx-extra"
+  "/var/local/mkdistro/qsc-apk/qnx-core::${HOME}/.cache/qsc-apk/8.0.5/qnx-core"
+  "/var/local/mkdistro/qsc-apk/qnx-extra::${HOME}/.cache/qsc-apk/8.0.5/qnx-extra"
 )
 
 keys=(

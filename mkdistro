@@ -20,7 +20,7 @@ image_size=""
 image_format=""
 image_inodes=""
 repositories=()
-declare -A local_repositories=()
+local_repositories=()
 packages=()
 keys=()
 users=""
@@ -124,6 +124,17 @@ _check_path_abs() {
   return 0
 }
 
+_check_local_repo_format() {
+  local val="${1}"
+  if [[ "${val}" == "*::*" ]]; then
+    val="${val#*::}"
+    local embed_path="${val%%::*}"
+    _check_path_abs "${embed_path}"
+  fi
+
+  _check_path_abs "${val}"
+}
+
 assert_arr_keys() {
   local name="$1"
   local -n array_ref="${name}"
@@ -216,23 +227,30 @@ make_apk_root() {
   for key in "${keys[@]}"; do
     args+=("--key" "${key}")
   done
+
   for repo in "${local_repositories[@]}"; do
+    if [[ "${repo}" == *::* ]]; then
+      repo="${repo#*::}"
+    fi
+
     args+=("--repo" "$(realpath "${repo}")")
   done
 
   fakeroot -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
 
-  local repo_path=""
+  local repo_embed_path=""
   msg "copying local repositories"
-  for key in "${!local_repositories[@]}"; do
-    repo="${local_repositories[${key}]}"
-    repo_path="$(realpath -m "${key}")"
+  for repo in "${local_repositories[@]}"; do
+    if [[ "${repo}" == *::* ]]; then
+      repo="${repo#*::}"
+      repo_embed_path="${repo%%::*}"
+    fi
 
-    msg "copying \"${repo}\" to \"<apk-root>${key}\""
+    msg "copying \"${repo}\" to \"<apk-root>${repo_embed_path}\""
 
-    sed -i "s|""${repo}""|${key}|g" "${apk_root}/etc/apk/repositories"
-    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- mkdir -p "${apk_root}/${repo_path}"
-    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- cp -r "${repo}/${arch}" "${apk_root}/${repo_path}/${arch}"
+    sed -i "s|""${repo}""|${repo_embed_path}|g" "${apk_root}/etc/apk/repositories"
+    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- mkdir -p "${apk_root}/${repo_embed_path}"
+    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- cp -r "${repo}/${arch}" "${apk_root}/${repo_embed_path}/${arch}"
   done
 }
 
@@ -260,7 +278,7 @@ validate_preset() {
   assert_num_or_auto image_inodes
 
   assert_arr repositories
-  assert_arr_keys local_repositories _check_path_abs
+  assert_arr local_repositories
 
   assert_arr keys
   assert_arr packages
