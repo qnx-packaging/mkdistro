@@ -212,6 +212,21 @@ assert_empty() {
   return 0
 }
 
+configure_openrc() {
+  local openrc_service=""
+  # Enable top level services
+  for openrc_service in "${openrc_services[@]}"; do
+    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- \
+      "${scripts_dir}/openrc-enable-service.sh" "${apk_root}" "${openrc_service}"
+  done
+
+  # Configure services
+  for openrc_service in "${!openrc_confd[@]}"; do
+    fakeroot -i ${fakeroot_save} -s ${fakeroot_save} -- \
+      "${scripts_dir}/openrc-configure-service.sh" "${apk_root}" "${openrc_service}" <(cat <<<"${openrc_confd[${openrc_service}]}")
+  done
+}
+
 make_apk_root() {
   local args=()
   args+=("--root" "${apk_root}")
@@ -242,8 +257,8 @@ make_apk_root() {
   msg "copying local repositories"
   for repo in "${local_repositories[@]}"; do
     if [[ "${repo}" == *::* ]]; then
-      repo="${repo#*::}"
       repo_embed_path="${repo%%::*}"
+      repo="${repo#*::}"
     fi
 
     msg "copying \"${repo}\" to \"<apk-root>${repo_embed_path}\""
@@ -256,6 +271,8 @@ make_apk_root() {
 
 build_image() {
   make_apk_root
+
+  configure_openrc
 
   echo "TODO"
 }
