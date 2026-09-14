@@ -7,16 +7,24 @@ preset_path=""
 preset_name=""
 fakeroot_save=""
 scripts_dir="$(realpath ./scripts)"
+common_dir="$(realpath ./common)"
 tmp_dir=""
 apk_root=""
+apk_lockfile=""
+root_partition_filelist=""
+root_partition_out=""
+boot_partition_filelist=""
+boot_partition_out=""
+disk_layout_filelist=""
+disk_layout_out=""
 
 # preset variables
 arch=""
-boot_type=""
+boot_partition_type=""
+boot_partition_size=0
 boot_partition_layout=""
-boot_partition_gpt=""
 mkdyifs_preset=""
-image_size=""
+image_size=0
 image_format=""
 image_inodes=""
 repositories=()
@@ -47,7 +55,11 @@ get_app_cache() {
 }
 
 to_bytes() {
-  numfmt --format='%.0f' --to-unit=B "${1}"
+  numfmt --from=iec "${1}"
+}
+
+from_bytes() {
+  numfmt --to=iec "${1}" --format="%.2f" | sed -E 's/0+([A-Z]*)$/\1/; s/\.([A-Z]*)$/\1/'
 }
 
 usage() {
@@ -212,6 +224,72 @@ assert_empty() {
   return 0
 }
 
+generate_image() {
+  # We need a bit of padding 4096 ends up being a extra page
+  local sectors=$((($(to_bytes "${image_size}") + 4096) / 512))
+  msg "Generating disk image"
+
+  cat <<EOF >"${disk_layout_filelist}"
+[cylinders=${sectors}]
+[heads=1 sectors_per_track=1 sector_size=512 start_at_cylinder=2048]
+[partition=1 type_guid="${boot_partition_type}" boot=true] "${boot_partition_out}"
+[partition=2 type_guid="qnx6"] "${root_partition_out}"
+EOF
+
+  diskimage -g -S -c "${disk_layout_filelist}" -o "${disk_layout_out}" >/dev/null
+
+  if [[ ${image_format} == "qcow2" ]]; then
+    msg "Converting to qcow2 format"
+    qemu-img convert -f raw -O qcow2 -c -S 4k "${disk_layout_out}" "${disk_layout_out%.*}.qcow2}"
+  fi
+}
+
+generate_boot_partition() {
+  local sectors="$1"
+  local layout_path=""
+
+  msg "Generating boot partition with size $(from_bytes $((sectors * 512)))"
+
+  echo "[num_sectors=${sectors}]" >"${boot_partition_filelist}"
+  echo "[search=${tmp_dir}]" >>"${boot_partition_filelist}"
+
+  if [[ "${boot_partition_type}" == "efi" && "${boot_partition_layout}" == "" ]]; then
+    layout_path="${common_dir}/efi_${arch}.build"
+  fi
+  #TODO: support custom partition layouts
+
+  cat "${layout_path}" >>"${boot_partition_filelist}"
+
+  mkfatfsimg -r "${tmp_dir}" "${boot_partition_filelist}" "${boot_partition_out}"
+}
+
+generate_root_partition() {
+  local sectors="$1"
+
+  if [[ ${image_inodes} == "auto" ]]; then
+    echo "[num_sectors=${sectors}]" >"${root_partition_filelist}"
+  else
+    echo "[num_sectors=${sectors} num_inodes=${image_inodes}]" >"${root_partition_filelist}"
+  fi
+  fakeroot -i "${fakeroot_save}" -- "${scripts_dir}/filelist-gen.sh" "${apk_root}" "${root_partition_filelist}"
+
+  msg "Generating root partition with size $(from_bytes $((sectors * 512)))"
+
+  mkqnx6fsimg -d "${root_partition_filelist}" "${root_partition_out}"
+}
+
+generate_partitions() {
+  local boot_sectors=0
+  local root_sectors=0
+
+  boot_sectors="$(($(to_bytes "${boot_partition_size}") / 512))"
+  # Root sectors is the amount of space left AFTER the boot partition
+  root_sectors=$((($(to_bytes "${image_size}") / 512) - boot_sectors))
+
+  generate_boot_partition "${boot_sectors}"
+  generate_root_partition "${root_sectors}"
+}
+
 copy_overlay() {
   fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- install -d -m0775 -o 0 -g 0 -- "${apk_root}"
 
@@ -243,7 +321,7 @@ make_apk_root() {
   local args=()
   args+=("--root" "${apk_root}")
   args+=("--arch" "${arch}")
-  args+=("--lockfile" "/tmp/asdf.lock")
+  args+=("--lockfile" "${apk_lockfile}")
 
   local repo=""
   for repo in "${repositories[@]}"; do
@@ -263,7 +341,7 @@ make_apk_root() {
     args+=("--repo" "$(realpath "${repo}")")
   done
 
-  fakeroot -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
+  fakeroot -i ${fakeroot_save} -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
 
   local repo_embed_path=""
   msg "copying local repositories"
@@ -285,25 +363,36 @@ build_image() {
   copy_overlay
   make_apk_root
   configure_openrc
+  #TODO: password and skel
+  #TODO: mydyifs
+  echo "" >"${tmp_dir}/ifs.bin"
+
+  generate_partitions
+  generate_image
 
   echo "TODO"
 }
 
 validate_preset() {
   assert_oneof arch "x86_64" "aarch64":
-  assert_oneof boot_type "uefi" "custom"
   assert_size_or_auto boot_partition_size
+  assert boot_partition_type
 
-  if [[ "${boot_type}" == "custom" ]]; then
-    assert boot_partition_layout
-    assert boot_partition_gpt
+  if [[ "${boot_partition_type}" == "efi" ]]; then
+    if ! [[ -z "${boot_partition_layout}" ]]; then
+      assert boot_partition_layout
+    fi
   else
-    assert_empty boot_partition_layout
-    assert_empty boot_partition_gpt
+    assert boot_partition_layout
   fi
 
   assert_size_or_auto image_size
   assert_oneof image_format "iso" "qcow2"
+
+  if [[ ${image_format} == "qcow2" ]] && ! command -v git &>/dev/null; then
+    msg_error "qcow2 format request but command \"qemu-img\" not found"
+  fi
+
   assert_num_or_auto image_inodes
 
   assert_arr repositories
@@ -341,6 +430,18 @@ preset_name="$(basename "${preset_path}")"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mkdistro-${preset_name}.XXXXXX")"
 fakeroot_save="${tmp_dir}/apkroot-fakeroot.save"
 apk_root="${tmp_dir}/apkroot"
+apk_lockfile="${tmp_dir}/${preset_name}.lock"
+root_partition_filelist="${tmp_dir}/root_partition.build"
+root_partition_out="${tmp_dir}/root_partition.part"
+
+boot_partition_filelist="${tmp_dir}/boot_partiton.build"
+boot_partition_out="${tmp_dir}/boot_partition.part"
+
+disk_layout_filelist="${tmp_dir}/disk.build"
+disk_layout_out="${tmp_dir}/disk.img"
+
+#Pre generate the save file
+fakeroot -s "${fakeroot_save}" -- true
 
 read_preset
 validate_preset

@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
 
 # RUN ME IN FAKEROOT!
 # Install a bunch of apk packages, then generate a list of files to be used by mkqnximage

@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
 
 # RUN ME IN FAKEROOT!
 # Activate the designated list of OpenRC services

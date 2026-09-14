@@ -1,12 +1,13 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 # shellcheck disable=SC2034
 
 arch="x86_64"
-boot_type="uefi"
 
-#boot_type="custom"
-#boot_partition_layout="rpi5" # rpi5.build
-#boot_partition_gpt="ms"
+boot_partition_type="efi" # efi special will use builtin layout if none is set
+#boot_partition_layout="rpi5"
+
+# efi_<arch>.build
+# efi.build
 
 boot_partition_size="256M" # parse size via ex G M T
 
