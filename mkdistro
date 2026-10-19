@@ -226,7 +226,7 @@ assert_empty() {
 
 generate_image() {
   # We need a bit of padding 4096 ends up being a extra page
-  local sectors=$((($(to_bytes "${image_size}") + 4096) / 512))
+  local sectors=$((($(to_bytes "${image_size}") + (4096 * 512)) / 512))
   msg "Generating disk image"
 
   cat <<EOF >"${disk_layout_filelist}"
@@ -241,6 +241,7 @@ EOF
   if [[ ${image_format} == "qcow2" ]]; then
     msg "Converting to qcow2 format"
     qemu-img convert -f raw -O qcow2 -c -S 4k "${disk_layout_out}" "${disk_layout_out%.*}.qcow2}"
+    disk_layout_out="${disk_layout_out%.*}.qcow2}"
   fi
 }
 
