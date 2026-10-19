@@ -303,6 +303,10 @@ copy_overlay() {
 
 }
 
+setup_passwd() {
+  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- "${scripts_dir}/passwd-gen.sh" "${apk_root}" <(echo "${users}") <(echo "${groups}")
+}
+
 configure_openrc() {
   local openrc_service=""
   # Enable top level services
@@ -342,7 +346,7 @@ make_apk_root() {
     args+=("--repo" "$(realpath "${repo}")")
   done
 
-  fakeroot -i ${fakeroot_save} -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
+  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
 
   local repo_embed_path=""
   msg "copying local repositories"
@@ -364,18 +368,16 @@ build_image() {
   copy_overlay
   make_apk_root
   configure_openrc
-  #TODO: password and skel
+  setup_passwd
   #TODO: mydyifs
   echo "" >"${tmp_dir}/ifs.bin"
 
   generate_partitions
   generate_image
-
-  echo "TODO"
 }
 
 validate_preset() {
-  assert_oneof arch "x86_64" "aarch64":
+  assert_oneof arch "x86_64" "aarch64"
   assert_size_or_auto boot_partition_size
   assert boot_partition_type
 
@@ -447,3 +449,5 @@ fakeroot -s "${fakeroot_save}" -- true
 read_preset
 validate_preset
 build_image
+
+echo "TODO: give use image"
