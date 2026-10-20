@@ -1,13 +1,27 @@
 #!/usr/bin/env bash
+#
+# mkdistro [OPTIONS] <preset>
+#
+# Build a QNX disk image from a preset directory. See README.md for the exit
+# codes and what each one means.
 
-# mkdistro <preset>
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+readonly E_USAGE=2
+readonly E_PRESET=3
+readonly E_DEPS=4
+readonly E_BUILD=5
+
+program_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # global variables
 preset_path=""
 preset_name=""
+out_dir="./out"
 fakeroot_save=""
-scripts_dir="$(realpath ./scripts)"
-common_dir="$(realpath ./common)"
+scripts_dir=""
+common_dir=""
 tmp_dir=""
 apk_root=""
 apk_lockfile=""
@@ -17,13 +31,18 @@ boot_partition_filelist=""
 boot_partition_out=""
 disk_layout_filelist=""
 disk_layout_out=""
+keep_tmp=false
+
+# Stages: args, preset, tools, build.
+stage="args"
 
 # preset variables
 arch=""
 boot_partition_type=""
 boot_partition_size=0
 boot_partition_layout=""
-mkdyifs_preset=""
+# shellcheck disable=SC2034
+mkdynifs_preset=""
 image_size=0
 image_format=""
 image_inodes=""
@@ -31,28 +50,14 @@ repositories=()
 local_repositories=()
 packages=()
 keys=()
-users=""
-groups=""
+users=()
+groups=()
 openrc_services=()
 declare -A openrc_confd=()
 
-get_app_cache() {
-  local app_name="$1"
-  local base_cache
+preset_errors=()
 
-  if [[ -n "${XDG_CACHE_HOME}" ]]; then
-    base_cache="${XDG_CACHE_HOME}"
-  elif [[ "$(uname -s)" = "Darwin" ]]; then
-    base_cache="${HOME}/Library/Caches"
-  else
-    base_cache="${HOME}/.cache"
-  fi
-
-  local app_cache_dir="${base_cache}/${app_name}"
-  mkdir -p "${app_cache_dir}"
-
-  echo "${app_cache_dir}"
-}
+#--- helpers -----------------------------------------------------------------
 
 to_bytes() {
   numfmt --from=iec "${1}"
@@ -62,24 +67,195 @@ from_bytes() {
   numfmt --to=iec "${1}" --format="%.2f" | sed -E 's/0+([A-Z]*)$/\1/; s/\.([A-Z]*)$/\1/'
 }
 
-usage() {
-  echo ""
+to_bytes_checked() {
+  local what="${1}"
+  local value="${2}"
+  local bytes
+
+  if ! bytes="$(to_bytes "${value}")"; then
+    msg_error "unable to parse ${what} = '${value}' as a size"
+  fi
+
+  printf '%s\n' "${bytes}"
 }
+
+#--- logging -----------------------------------------------------------------
 
 msg() {
   printf '[mkdistro] %s\n' "${1}"
 }
 
+msg_warn() {
+  printf '[mkdistro] WARNING: %s\n' "${1}" >&2
+}
+
+# Leave the program with a status. Drops the ERR trap first
+quit() {
+  trap - ERR
+  exit "${1}"
+}
+
+die() {
+  local code="${1}"
+  shift
+  printf '[mkdistro] ERROR: %s\n' "${*}" >&2
+  quit "${code}"
+}
+
 msg_error() {
-  printf '[mkdistro] ERROR: %s\n' "${1}"
-  if ((${2} > 0)); then
-    exit "${2}"
+  die "${E_BUILD}" "${1}"
+}
+
+preset_error() {
+  preset_errors+=("${1}")
+  printf '[mkdistro] ERROR: %s\n' "${1}" >&2
+}
+
+report_preset_errors() {
+  if ((${#preset_errors[@]} > 0)); then
+    printf '[mkdistro] ERROR: preset is invalid (%d problem(s))\n' "${#preset_errors[@]}" >&2
+    quit "${E_PRESET}"
   fi
 }
 
-msg_fatal() {
-  printf '[mkdistro] FATAL: %s\n' "${1}"
-  return 1
+usage() {
+  cat <<'EOF'
+mkdistro [OPTIONS] <preset>
+
+  Build a QNX disk image from <preset>, a directory containing a preset.sh.
+
+Options:
+  -h, --help      Show this help and exit.
+  -o, --output DIR
+                  Directory for the finished files. Default: ./out, relative to
+                  the directory mkdistro was run from. Created if missing. On a
+                  successful build the disk image and the apk lock file are
+                  copied there as <preset>_<YYYYMMDD>.<ext> and
+                  <preset>_<YYYYMMDD>.lock.
+  --keep-tmp      Keep the temporary build directory after a successful build.
+                  A failed build always keeps it, and prints where.
+
+EOF
+}
+
+#--- setup -------------------------------------------------------------------
+
+on_err() {
+  local line="${1}"
+  local cmd="${2}"
+  local status="${3}"
+  local code="${E_BUILD}"
+
+  case "${stage}" in
+  args) code="${E_USAGE}" ;;
+  preset) code="${E_PRESET}" ;;
+  tools) code="${E_DEPS}" ;;
+  esac
+
+  printf '[mkdistro] FATAL: line %s failed (exit %s): %s\n' "${line}" "${status}" "${cmd}" >&2
+  quit "${code}"
+}
+
+on_exit() {
+  local status=$?
+
+  if [[ -z "${tmp_dir}" || ! -d "${tmp_dir}" ]]; then
+    return "${status}"
+  fi
+
+  if ((status != 0)); then
+    printf '[mkdistro] left in: %s\n' "${tmp_dir}" >&2
+    return "${status}"
+  fi
+
+  if [[ "${keep_tmp}" == true ]]; then
+    msg "keeping temporary directory: ${tmp_dir}"
+    return "${status}"
+  fi
+
+  rm -f -- \
+    "${boot_partition_out}" "${boot_partition_filelist}" \
+    "${root_partition_out}" "${root_partition_filelist}" \
+    "${disk_layout_filelist}" \
+    "${fakeroot_save}" "${apk_lockfile}" "${tmp_dir}/ifs.bin"
+  rm -rf -- "${apk_root}"
+
+  local leftover
+  leftover="$(find "${tmp_dir}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')"
+  if [[ "${leftover}" != "$(basename -- "${disk_layout_out}") " ]]; then
+    msg_warn "unexpected files left in ${tmp_dir}: ${leftover}"
+  fi
+
+  return "${status}"
+}
+
+require_dir() {
+  local what="${1}"
+  local path="${2}"
+
+  if [[ ! -d "${path}" ]]; then
+    die "${E_USAGE}" "${what} directory not found at ${path}; mkdistro needs scripts/ and common/ next to itself"
+  fi
+}
+
+require_tools() {
+  stage="tools"
+
+  local -a required=(fakeroot apk sed curl awk find numfmt mktemp realpath getopt)
+  local -a missing=()
+  local tool
+
+  required+=(diskimage mkfatfsimg mkqnx6fsimg mkshadow)
+  if [[ "${image_format}" == "qcow2" ]]; then
+    required+=(qemu-img)
+  fi
+
+  for tool in "${required[@]}"; do
+    if ! command -v "${tool}" &>/dev/null; then
+      missing+=("${tool}")
+    fi
+  done
+
+  if ((${#missing[@]} > 0)); then
+    die "${E_DEPS}" "missing required tool(s): ${missing[*]}"
+  fi
+}
+
+#--- validators --------------------------------------------------------------
+
+check_failure=""
+
+report_check_failure() {
+  local subject="${1}" validator="${2}"
+  shift 2
+
+  if [[ -n "${check_failure}" ]]; then
+    preset_error "${subject}: ${check_failure}"
+  elif (($# > 0)); then
+    preset_error "${subject} failed ${validator} $*"
+  else
+    preset_error "${subject} failed ${validator}"
+  fi
+}
+
+_check_path_abs() {
+  local val="${1}"
+  if [[ ! "${val}" =~ ^/[^[:space:]]*$ ]]; then
+    check_failure="'${val}' is not an absolute path without spaces"
+    return 1
+  fi
+  return 0
+}
+
+_check_local_repo_format() {
+  local val="${1}"
+  if [[ "${val}" == *::* ]]; then
+    val="${val%%::*}"
+    _check_path_abs "${val}"
+    return $?
+  fi
+
+  _check_path_abs "${val}"
 }
 
 assert() {
@@ -88,7 +264,8 @@ assert() {
   local var_value="${!var_name}"
 
   if [[ -z "${var_value}" ]]; then
-    msg_error "'${var_name}' is empty or unset" 1
+    preset_error "'${var_name}' is empty or unset"
+    return 0
   fi
 
   if [[ $# -eq 0 ]]; then
@@ -98,8 +275,9 @@ assert() {
   local validator="${1}"
   shift
 
+  check_failure=""
   if ! "${validator}" "${var_value}" "$@"; then
-    msg_error "'${var_name}' = '${var_value}' failed ${validator[$*]}" 1
+    report_check_failure "'${var_name}' = '${var_value}'" "${validator}" "$@"
   fi
 
   return 0
@@ -107,11 +285,13 @@ assert() {
 
 assert_arr() {
   local name="$1"
+  local -n array_ref="${name}"
   shift
-  local -a arr=("${!name[@]}")
+  local -a arr=("${array_ref[@]}")
 
   if [[ ${#arr[@]} -eq 0 ]]; then
-    msg_error "array '${name}' is empty or unset" 1
+    preset_error "array '${name}' is empty or unset"
+    return 0
   fi
 
   if [[ $# -eq 0 ]]; then
@@ -121,40 +301,60 @@ assert_arr() {
   local validator="${1}"
   shift
 
-  if ! "${validator}" "$@" "${arr[@]}"; then
-    msg_error "array '${name}' failed ${validator}" 1
+  check_failure=""
+  if ! "${validator}" "${arr[@]}" "$@"; then
+    report_check_failure "array '${name}'" "${validator}" "$@"
   fi
+
   return 0
 }
 
-# Every key is an absolute path with no internal spaces.
-_check_path_abs() {
-  local val="${1}"
-  if [[ ! "${val}" =~ ^/[^[:space:]]*$ ]]; then
-    return 1
+assert_arr_each() {
+  local name="$1"
+  local -n array_ref="${name}"
+  shift
+  local -a arr=("${array_ref[@]}")
+
+  if [[ ${#arr[@]} -eq 0 ]]; then
+    preset_error "array '${name}' is empty or unset"
+    return 0
   fi
+
+  local validator="$1"
+  shift
+  local entry
+
+  for entry in "${arr[@]}"; do
+    check_failure=""
+    if ! "${validator}" "${entry}" "$@"; then
+      report_check_failure "${name} entry '${entry}'" "${validator}" "$@"
+    fi
+  done
   return 0
 }
 
-_check_local_repo_format() {
-  local val="${1}"
-  if [[ "${val}" == "*::*" ]]; then
-    val="${val#*::}"
-    local embed_path="${val%%::*}"
-    _check_path_abs "${embed_path}"
-  fi
+_check_key_url() {
+  local url="${1}"
+  local protocol="${url%%[:/]*}"
 
-  _check_path_abs "${val}"
+  case "${protocol}" in
+  http | https | abuild | file)
+    return 0
+    ;;
+  esac
+
+  check_failure="unsupported protocol '${protocol}'; supported: http, https, abuild, file"
+  return 1
 }
 
 assert_arr_keys() {
   local name="$1"
   local -n array_ref="${name}"
   shift
-  local -a keys=("${!array_ref[@]}")
+  local -a keys_=("${!array_ref[@]}")
 
-  if [[ ${#keys[@]} -eq 0 ]]; then
-    msg_error "keys of '${name}' is empty or unset" 1
+  if [[ ${#keys_[@]} -eq 0 ]]; then
+    return 0
   fi
 
   if [[ $# -eq 0 ]]; then
@@ -165,12 +365,139 @@ assert_arr_keys() {
   shift
   local k
 
-  for k in "${keys[@]}"; do
+  for k in "${keys_[@]}"; do
+    check_failure=""
     if ! "${validator}" "${k}" "${@}"; then
-      msg_error "keys '${name}[\"${k}\"]' failed ${validator}" 1
+      report_check_failure "key '${name}[\"${k}\"]'" "${validator}" "$@"
     fi
   done
   return 0
+}
+
+_check_passwd_entry() {
+  local entry="${1}"
+
+  if [[ ! "${entry}" =~ ^[A-Za-z0-9._-]+:[^:]*:[0-9]+:[0-9]+:[^:]*:/:?[A-Za-z0-9._/-]*:[^:]+$ ]]; then
+    check_failure="not a valid passwd entry (name:pw:uid:gid:gecos:home:shell)"
+    return 1
+  fi
+  return 0
+}
+
+_check_group_entry() {
+  local entry="${1}"
+
+  if [[ ! "${entry}" =~ ^[A-Za-z0-9._-]+:[^:]*:[0-9]+(:[A-Za-z0-9._,-]*)?$ ]]; then
+    check_failure="not a valid group entry (name:pw:gid[:members])"
+    return 1
+  fi
+  return 0
+}
+
+_check_confd_key() {
+  local key="${1}"
+
+  if [[ ! "${key}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    check_failure="the service name is not a plain filename"
+    return 1
+  fi
+
+  local service
+  for service in "${openrc_services[@]}"; do
+    if [[ "${service}" == "${key}" ]]; then
+      return 0
+    fi
+  done
+
+  check_failure="openrc_services does not enable it"
+  return 1
+}
+
+validate_users_and_groups() {
+  local -A user_names=() user_uids=() group_names=() group_gids=()
+  local -a f=()
+  local entry name uid gid members member bad=0
+
+  for entry in "${users[@]}"; do
+    f=()
+    IFS=: read -r -a f <<<"${entry}"
+    name="${f[0]:-}"
+    uid="${f[2]:-}"
+    gid="${f[3]:-}"
+
+    if [[ -z "${name}" || -z "${uid}" || -z "${gid}" ]]; then
+      continue
+    fi
+
+    if [[ -n ${user_names[${name}]+set} ]]; then
+      preset_error "user '${name}' is declared more than once"
+      bad=1
+    fi
+    user_names["${name}"]=1
+
+    if [[ -n ${user_uids[${uid}]+set} ]]; then
+      preset_error "uid ${uid} is used by more than one user"
+      bad=1
+    fi
+    user_uids["${uid}"]=1
+  done
+
+  if [[ ${#users[@]} -gt 0 && "${users[0]%%:*}" != "root" ]]; then
+    preset_error "users must start with a root entry, got '${users[0]%%:*}'"
+    bad=1
+  fi
+
+  for entry in "${groups[@]}"; do
+    f=()
+    IFS=: read -r -a f <<<"${entry}"
+    name="${f[0]:-}"
+    gid="${f[2]:-}"
+    members="${f[3]:-}"
+
+    if [[ -z "${name}" || -z "${gid}" ]]; then
+      continue
+    fi
+
+    if [[ -n ${group_names[${name}]+set} ]]; then
+      preset_error "group '${name}' is declared more than once"
+      bad=1
+    fi
+    group_names["${name}"]=1
+
+    if [[ -n ${group_gids[${gid}]+set} ]]; then
+      preset_error "gid ${gid} is used by more than one group"
+      bad=1
+    fi
+    group_gids["${gid}"]=1
+
+    local -a member_list=()
+    IFS=, read -r -a member_list <<<"${members}"
+    for member in "${member_list[@]}"; do
+      if [[ -z ${member} ]]; then
+        continue
+      fi
+      if [[ -z ${user_names[${member}]+set} ]]; then
+        preset_error "group '${name}' lists member '${member}' which is not in users"
+        bad=1
+      fi
+    done
+  done
+
+  for entry in "${users[@]}"; do
+    f=()
+    IFS=: read -r -a f <<<"${entry}"
+    name="${f[0]:-}"
+    gid="${f[3]:-}"
+    if [[ -z "${name}" || -z "${gid}" ]]; then
+      continue
+    fi
+    if [[ -z ${group_gids[${gid}]+set} ]]; then
+      preset_error "user '${name}' has primary gid ${gid} which no group in groups declares"
+      bad=1
+    fi
+  done
+
+  return "${bad}"
 }
 
 _check_oneof() {
@@ -180,6 +507,7 @@ _check_oneof() {
   for opt in "${@}"; do
     [[ "${val}" == "${opt}" ]] && return 0
   done
+  check_failure="expected one of: $*"
   return 1
 }
 
@@ -201,7 +529,6 @@ assert_num_or_auto() {
   shift
   assert "${n}" _check_num_or_auto "$@"
 }
-
 _check_size_or_auto() {
   local v="$1"
   local s="${2-auto}"
@@ -215,18 +542,20 @@ assert_size_or_auto() {
   assert "${n}" _check_size_or_auto "$@"
 }
 
-assert_empty() {
-  local var_name="$1"
-  shift
-  if [[ -n "${!var_name}" ]]; then
-    msg_error "'${var_name}' = '${!var_name}' should be empty" 1
-  fi
-  return 0
+in_fakeroot() {
+  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- "$@"
 }
 
+#--- build steps -------------------------------------------------------------
+
 generate_image() {
-  # We need a bit of padding 4096 ends up being a extra page
-  local sectors=$((($(to_bytes "${image_size}") + (4096 * 512)) / 512))
+  # Padding so the last sector is never right at the edge of the image
+  local -i pad_sectors=4096
+  local -i image_bytes=0
+  local -i sectors=0
+
+  image_bytes="$(to_bytes_checked image_size "${image_size}")"
+  sectors=$((image_bytes / 512 + pad_sectors))
   msg "Generating disk image"
 
   cat <<EOF >"${disk_layout_filelist}"
@@ -236,67 +565,97 @@ generate_image() {
 [partition=2 type_guid="qnx6"] "${root_partition_out}"
 EOF
 
-  diskimage -g -S -c "${disk_layout_filelist}" -o "${disk_layout_out}" >/dev/null
+  if ! diskimage -g -S -c "${disk_layout_filelist}" -o "${disk_layout_out}" >/dev/null; then
+    msg_error "diskimage failed; see ${disk_layout_filelist}"
+  fi
 
   if [[ ${image_format} == "qcow2" ]]; then
     msg "Converting to qcow2 format"
-    qemu-img convert -f raw -O qcow2 -c -S 4k "${disk_layout_out}" "${disk_layout_out%.*}.qcow2}"
-    disk_layout_out="${disk_layout_out%.*}.qcow2}"
+    local qcow2_out="${disk_layout_out%.*}.qcow2"
+    if ! qemu-img convert -f raw -O qcow2 -c -S 4k "${disk_layout_out}" "${qcow2_out}"; then
+      msg_error "qemu-img convert failed for ${disk_layout_out}"
+    fi
+    rm -f -- "${disk_layout_out}"
+    disk_layout_out="${qcow2_out}"
   fi
 }
 
 generate_boot_partition() {
   local sectors="$1"
   local layout_path=""
+  local size=""
 
-  msg "Generating boot partition with size $(from_bytes $((sectors * 512)))"
-
-  echo "[num_sectors=${sectors}]" >"${boot_partition_filelist}"
-  echo "[search=${tmp_dir}]" >>"${boot_partition_filelist}"
+  size="$(from_bytes $((sectors * 512)))"
+  msg "Generating boot partition with size ${size}"
 
   if [[ "${boot_partition_type}" == "efi" && "${boot_partition_layout}" == "" ]]; then
     layout_path="${common_dir}/efi_${arch}.build"
   fi
   #TODO: support custom partition layouts
 
+  if [[ ! -s "${layout_path}" ]]; then
+    msg_error "no boot partition layout for boot_partition_type='${boot_partition_type}' (custom layouts are not supported yet; looked for ${layout_path:-<none>})"
+  fi
+
+  echo "[num_sectors=${sectors}]" >"${boot_partition_filelist}"
+  echo "[search=${tmp_dir}]" >>"${boot_partition_filelist}"
   cat "${layout_path}" >>"${boot_partition_filelist}"
 
-  mkfatfsimg -r "${tmp_dir}" "${boot_partition_filelist}" "${boot_partition_out}"
+  if ! mkfatfsimg -r "${tmp_dir}" "${boot_partition_filelist}" "${boot_partition_out}"; then
+    msg_error "mkfatfsimg failed; see ${boot_partition_filelist}"
+  fi
 }
 
 generate_root_partition() {
   local sectors="$1"
+  local size=""
 
   if [[ ${image_inodes} == "auto" ]]; then
     echo "[num_sectors=${sectors}]" >"${root_partition_filelist}"
   else
     echo "[num_sectors=${sectors} num_inodes=${image_inodes}]" >"${root_partition_filelist}"
   fi
+  # Reads only, so the save file is not written back: the filelist must not
+  # change the staged root or its staging.
   fakeroot -i "${fakeroot_save}" -- "${scripts_dir}/filelist-gen.sh" "${apk_root}" "${root_partition_filelist}"
 
-  msg "Generating root partition with size $(from_bytes $((sectors * 512)))"
+  size="$(from_bytes $((sectors * 512)))"
+  msg "Generating root partition with size ${size}"
 
-  mkqnx6fsimg -d "${root_partition_filelist}" "${root_partition_out}"
+  if ! mkqnx6fsimg -d "${root_partition_filelist}" "${root_partition_out}"; then
+    msg_error "mkqnx6fsimg failed; see ${root_partition_filelist}"
+  fi
 }
 
 generate_partitions() {
-  local boot_sectors=0
-  local root_sectors=0
+  local -i boot_sectors=0
+  local -i root_sectors=0
+  local -i boot_bytes=0
+  local -i image_bytes=0
 
-  boot_sectors="$(($(to_bytes "${boot_partition_size}") / 512))"
+  boot_bytes="$(to_bytes_checked boot_partition_size "${boot_partition_size}")"
+  image_bytes="$(to_bytes_checked image_size "${image_size}")"
+
+  boot_sectors=$((boot_bytes / 512))
   # Root sectors is the amount of space left AFTER the boot partition
-  root_sectors=$((($(to_bytes "${image_size}") / 512) - boot_sectors))
+  root_sectors=$((image_bytes / 512 - boot_sectors))
+
+  if ((root_sectors <= 0)); then
+    msg_error "image_size (${image_size}) is not larger than boot_partition_size (${boot_partition_size})"
+  fi
 
   generate_boot_partition "${boot_sectors}"
   generate_root_partition "${root_sectors}"
 }
 
 copy_overlay() {
-  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- install -d -m0775 -o 0 -g 0 -- "${apk_root}"
+  in_fakeroot install -d -m0775 -o 0 -g 0 -- "${apk_root}"
 
   if [[ -d "${preset_path}/overlay" ]]; then
     msg "Copying custom overlay"
-    cp -afv --no-preserve=ownership,mode -- "${preset_path}/overlay/." "${apk_root}"
+    if ! cp -afv --no-preserve=ownership,mode -- "${preset_path}/overlay/." "${apk_root}"; then
+      msg_error "failed to copy overlay from ${preset_path}/overlay"
+    fi
 
     #TODO: file permissions
   fi
@@ -304,22 +663,83 @@ copy_overlay() {
 }
 
 setup_passwd() {
-  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- "${scripts_dir}/passwd-gen.sh" "${apk_root}" <(echo "${users}") <(echo "${groups}")
+  in_fakeroot "${scripts_dir}/passwd-gen.sh" "${apk_root}" \
+    <(printf '%s\n' "${users[@]}") <(printf '%s\n' "${groups[@]}")
 }
 
 configure_openrc() {
   local openrc_service=""
   # Enable top level services
   for openrc_service in "${openrc_services[@]}"; do
-    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- \
+    in_fakeroot \
       "${scripts_dir}/openrc-enable-service.sh" "${apk_root}" "${openrc_service}"
   done
 
-  # Configure services
   for openrc_service in "${!openrc_confd[@]}"; do
-    fakeroot -i ${fakeroot_save} -s ${fakeroot_save} -- \
-      "${scripts_dir}/openrc-configure-service.sh" "${apk_root}" "${openrc_service}" <(cat <<<"${openrc_confd[${openrc_service}]}")
+    in_fakeroot \
+      "${scripts_dir}/openrc-configure-service.sh" "${apk_root}" "${openrc_service}" <(printf '%s\n' "${openrc_confd[${openrc_service}]}")
   done
+}
+
+embed_local_repositories() {
+  local repos_file="${apk_root}/etc/apk/repositories"
+  local -a new_lines=()
+  local repo repo_path embed_path entry line changed
+
+  if [[ ! -f "${repos_file}" ]]; then
+    msg_error "expected ${repos_file} to exist after installing packages"
+  fi
+
+  mapfile -t new_lines <"${repos_file}"
+
+  for entry in "${local_repositories[@]}"; do
+    if [[ "${entry}" == *::* ]]; then
+      embed_path="${entry%%::*}"
+      repo="${entry#*::}"
+    else
+      embed_path=""
+      repo="${entry}"
+    fi
+
+    if ! repo_path="$(realpath -qe -- "${repo}")"; then
+      msg_error "local repository '${repo}' does not exist"
+    fi
+
+    changed=0
+    for line in "${!new_lines[@]}"; do
+      if [[ "${new_lines[line]}" == "${repo}" || "${new_lines[line]}" == "${repo_path}" ]]; then
+        new_lines["${line}"]="${embed_path}"
+        changed=1
+      fi
+    done
+
+    if ((changed == 0)); then
+      msg_error "\"${repo}\" is listed in local_repositories but not in ${repos_file}; it is not one of the preset's repositories"
+    fi
+
+    if [[ -z "${embed_path}" ]]; then
+      msg "removing \"${repo}\" from <apk-root>/etc/apk/repositories (no embed path)"
+      continue
+    fi
+
+    msg "copying \"${repo}\" to \"<apk-root>${embed_path}\""
+
+    in_fakeroot mkdir -p "${apk_root}/${embed_path}"
+    in_fakeroot cp -r "${repo}/${arch}" "${apk_root}/${embed_path}/${arch}"
+  done
+
+  local -a out_lines=()
+  local line
+  for line in "${new_lines[@]}"; do
+    [[ -z "${line}" ]] && continue
+    out_lines+=("${line}")
+  done
+
+  if ((${#out_lines[@]} > 0)); then
+    printf '%s\n' "${out_lines[@]}" >"${repos_file}"
+  else
+    : >"${repos_file}"
+  fi
 }
 
 make_apk_root() {
@@ -346,22 +766,10 @@ make_apk_root() {
     args+=("--repo" "$(realpath "${repo}")")
   done
 
-  fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
+  in_fakeroot "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
 
-  local repo_embed_path=""
   msg "copying local repositories"
-  for repo in "${local_repositories[@]}"; do
-    if [[ "${repo}" == *::* ]]; then
-      repo_embed_path="${repo%%::*}"
-      repo="${repo#*::}"
-    fi
-
-    msg "copying \"${repo}\" to \"<apk-root>${repo_embed_path}\""
-
-    sed -i "s|""${repo}""|${repo_embed_path}|g" "${apk_root}/etc/apk/repositories"
-    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- mkdir -p "${apk_root}/${repo_embed_path}"
-    fakeroot -i "${fakeroot_save}" -s "${fakeroot_save}" -- cp -r "${repo}/${arch}" "${apk_root}/${repo_embed_path}/${arch}"
-  done
+  embed_local_repositories
 }
 
 build_image() {
@@ -376,78 +784,175 @@ build_image() {
   generate_image
 }
 
+#--- preset ------------------------------------------------------------------
+
 validate_preset() {
   assert_oneof arch "x86_64" "aarch64"
   assert_size_or_auto boot_partition_size
-  assert boot_partition_type
+  assert_oneof boot_partition_type efi special
 
   if [[ "${boot_partition_type}" == "efi" ]]; then
-    if ! [[ -z "${boot_partition_layout}" ]]; then
-      assert boot_partition_layout
+    if [[ -n "${boot_partition_layout}" ]]; then
+      #TODO: support custom partition layouts
+      preset_error "boot_partition_layout='${boot_partition_layout}' is not supported yet; leave it empty to use the built-in layout"
     fi
   else
-    assert boot_partition_layout
+    preset_error "boot_partition_type='${boot_partition_type}' is not implemented yet"
   fi
 
   assert_size_or_auto image_size
-  assert_oneof image_format "iso" "qcow2"
-
-  if [[ ${image_format} == "qcow2" ]] && ! command -v git &>/dev/null; then
-    msg_error "qcow2 format request but command \"qemu-img\" not found"
-  fi
+  assert_oneof image_format "raw" "qcow2"
 
   assert_num_or_auto image_inodes
 
   assert_arr repositories
-  assert_arr local_repositories
-
-  assert_arr keys
+  assert_arr_each keys _check_key_url
   assert_arr packages
 
-  assert users
-  assert groups
+  local entry
+  for entry in "${local_repositories[@]}"; do
+    check_failure=""
+    if ! _check_local_repo_format "${entry}"; then
+      report_check_failure "invalid local_repositories entry: ${entry}" _check_local_repo_format
+    fi
+  done
 
-  assert_arr openrc_services
-  #assert_arr_keys openrc_confd
+  assert_arr_each users _check_passwd_entry
+  assert_arr_each groups _check_group_entry
+  if ! validate_users_and_groups; then
+    preset_error "users and groups are inconsistent"
+  fi
+
+  assert_arr_keys openrc_confd _check_confd_key
+
+  report_preset_errors
 }
 
 read_preset() {
+  stage="preset"
+
   if [[ ! -d "${preset_path}" ]]; then
-    msg_error "Preset at '${preset_path}' does not exists" 1
+    die "${E_PRESET}" "preset at '${preset_path}' does not exist"
   elif [[ ! -e "${preset_path}/preset.sh" ]]; then
-    msg_error "Preset at '${preset_path}' does not contain a 'preset.sh' file" 1
+    die "${E_PRESET}" "preset at '${preset_path}' does not contain a 'preset.sh' file"
   fi
 
-  cd -- "${preset_path}" || msg_fatal "failed to cd to '${preset_path}'"
+  cd -- "${preset_path}" || die "${E_PRESET}" "failed to cd to '${preset_path}'"
 
-  # shellcheck source=presets/x86-64-qemu/preset.sh
-  . "${preset_path}/preset.sh" || msg_fatal "Can't source '${preset_path}/preset.sh'"
+  # shellcheck source=presets/x86_64-qemu/preset.sh disable=SC1091
+  . "${preset_path}/preset.sh" || die "${E_PRESET}" "can't source '${preset_path}/preset.sh'"
 }
 
-if (($# < 1)); then
-  echo "No preset provided"
+make_work_dir() {
+  stage="build"
+
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mkdistro-${preset_name}.XXXXXX")"
+  fakeroot_save="${tmp_dir}/apkroot-fakeroot.save"
+  apk_root="${tmp_dir}/apkroot"
+  apk_lockfile="${tmp_dir}/${preset_name}.lock"
+  root_partition_filelist="${tmp_dir}/root_partition.build"
+  root_partition_out="${tmp_dir}/root_partition.part"
+
+  boot_partition_filelist="${tmp_dir}/boot_partition.build"
+  boot_partition_out="${tmp_dir}/boot_partition.part"
+
+  disk_layout_filelist="${tmp_dir}/disk.build"
+  disk_layout_out="${tmp_dir}/disk.img"
+
+  #Pre generate the save file
+  fakeroot -s "${fakeroot_save}" -- true
+}
+
+#--- results -----------------------------------------------------------------
+
+copy_results() {
+  local date_tag
+  date_tag="$(date +%Y%m%d)"
+  local image_ext="${disk_layout_out##*.}"
+  local image_dest="${out_dir}/${preset_name}_${date_tag}.${image_ext}"
+  local lock_dest="${out_dir}/${preset_name}_${date_tag}.lock"
+
+  if [[ ! -s "${apk_lockfile}" ]]; then
+    msg_error "expected lock file ${apk_lockfile} to exist after the build"
+  fi
+
+  if ! cp -f -- "${disk_layout_out}" "${image_dest}"; then
+    msg_error "failed to copy image ${disk_layout_out} to ${image_dest}"
+  fi
+
+  if ! cp -f -- "${apk_lockfile}" "${lock_dest}"; then
+    msg_error "failed to copy lock file ${apk_lockfile} to ${lock_dest}"
+  fi
+
+  msg "Image ready: ${image_dest}"
+  msg "Lock file ready: ${lock_dest}"
+}
+
+#--- main --------------------------------------------------------------------
+
+trap 'on_err "${LINENO}" "${BASH_COMMAND}" "$?"' ERR
+trap 'on_exit' EXIT
+
+while (($# > 0)); do
+  case "$1" in
+  -h | --help)
+    usage
+    quit 0
+    ;;
+  -o | --output)
+    if (($# < 2)); then
+      usage >&2
+      die "${E_USAGE}" "$1 requires a directory"
+    fi
+    out_dir="${2}"
+    shift 2
+    ;;
+  --keep-tmp)
+    keep_tmp=true
+    shift
+    ;;
+  --)
+    shift
+    break
+    ;;
+  -*)
+    usage >&2
+    die "${E_USAGE}" "unknown option: $1"
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+if (($# != 1)); then
+  usage >&2
+  if (($# == 0)); then
+    die "${E_USAGE}" "no preset provided"
+  fi
+  die "${E_USAGE}" "expected exactly one preset, got $#: $*"
 fi
 
-preset_path="$(realpath "${1}")"
-preset_name="$(basename "${preset_path}")"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mkdistro-${preset_name}.XXXXXX")"
-fakeroot_save="${tmp_dir}/apkroot-fakeroot.save"
-apk_root="${tmp_dir}/apkroot"
-apk_lockfile="${tmp_dir}/${preset_name}.lock"
-root_partition_filelist="${tmp_dir}/root_partition.build"
-root_partition_out="${tmp_dir}/root_partition.part"
+preset_path="$(realpath -m -- "$1")" || die "${E_USAGE}" "cannot resolve preset path: $1"
+preset_name="$(basename -- "${preset_path}")"
 
-boot_partition_filelist="${tmp_dir}/boot_partiton.build"
-boot_partition_out="${tmp_dir}/boot_partition.part"
+out_dir="$(realpath -m -- "${out_dir}")" || die "${E_USAGE}" "cannot resolve output directory: ${out_dir}"
 
-disk_layout_filelist="${tmp_dir}/disk.build"
-disk_layout_out="${tmp_dir}/disk.img"
-
-#Pre generate the save file
-fakeroot -s "${fakeroot_save}" -- true
+require_dir "scripts" "${program_dir}/scripts"
+require_dir "common" "${program_dir}/common"
+scripts_dir="${program_dir}/scripts"
+common_dir="${program_dir}/common"
 
 read_preset
 validate_preset
+require_tools
+
+if ! mkdir -p -- "${out_dir}"; then
+  die "${E_BUILD}" "unable to create output directory: ${out_dir}"
+fi
+
+make_work_dir
+
 build_image
 
-echo "TODO: give use image"
+copy_results

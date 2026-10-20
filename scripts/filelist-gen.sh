@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
-ROOT=$1
-FILELIST_DEST=$2
-
 # RUN ME IN FAKEROOT!
-# Install a bunch of apk packages, then generate a list of files to be used by mkqnximage
+# Walk the staged apk root and generate the file list used by mkqnx6fsimg
+
+set -Eeuo pipefail
+
+ROOT=""
+FILELIST_DEST=""
+
 function usage() {
   echo "filelist-gen.sh [APKROOT] [MKQNX6FSIMG_DEST]"
   echo "  [APKROOT]           location to write files to"
@@ -15,11 +18,16 @@ function msg() {
   echo "[filelist-gen] $*"
 }
 
+function msg_error() {
+  printf '[filelist-gen] ERROR: %s\n' "${1}" >&2
+  exit 1
+}
+
 function generate_filelist() {
   local root=$1
   local prefix=$2
-  local repo_parent=$3
-  local target_partition_prefix=$4
+  local repo_parent=${3-${root}}
+  local target_partition_prefix=${4-}
 
   echo "# root=${root}"
   echo "# prefix=${prefix}"
@@ -57,5 +65,27 @@ function generate_filelist() {
     \( -printf "[type=file uid=%U gid=%G perms=%m] \"${np}%P\"=\"${rp}%P\"\n" \)
 }
 
+if (($# != 2)); then
+  usage >&2
+  msg_error "expected an APKROOT and an MKQNX6FSIMG_DEST, got $#: $*"
+fi
+
+ROOT=$1
+FILELIST_DEST=$2
+
+if [[ ! -d ${ROOT} ]]; then
+  msg_error "APKROOT ${ROOT} is not a directory"
+fi
+
+if [[ ! -e ${FILELIST_DEST} ]]; then
+  if ! : >"${FILELIST_DEST}"; then
+    msg_error "unable to write filelist to ${FILELIST_DEST}"
+  fi
+elif [[ ! -w ${FILELIST_DEST} ]]; then
+  msg_error "filelist destination ${FILELIST_DEST} is not writable"
+fi
+
 msg "Generating filelist for ${ROOT}"
-generate_filelist "${ROOT}" '' "${ROOT}" >>"${FILELIST_DEST}"
+if ! generate_filelist "${ROOT}" '' "${ROOT}" >>"${FILELIST_DEST}"; then
+  msg_error "failed to generate the filelist for ${ROOT}"
+fi

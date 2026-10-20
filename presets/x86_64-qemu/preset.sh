@@ -3,7 +3,7 @@
 
 arch="x86_64"
 
-boot_partition_type="efi" # efi special will use builtin layout if none is set
+boot_partition_type="efi" # efi uses the built-in layout; special is not implemented yet
 #boot_partition_layout="rpi5"
 
 # efi_<arch>.build
@@ -61,15 +61,19 @@ packages=(
   ca-certificates ca-certificates-mozilla
 )
 
-users="
-sshd:x:15:15:sshd:/var/chroot/sshd:/bin/false
-qnx:everywhere:1000:1000::/var/home/qnx:/bin/bash
-"
-groups="
-sshd::15:sshd
-"
+users=(
+  "root::0:0:root:/var/home/root:/bin/bash"
+  "sshd:x:15:15:sshd:/var/chroot/sshd:/bin/false"
+  "qnx:everywhere:1000:1000::/var/home/qnx:/bin/bash"
+)
 
-openrc_services=("random" "screen")
+groups=(
+  "root:x:0:root"
+  "sshd::15:sshd"
+  "qnx:x:1000:qnx"
+)
+
+openrc_services=("random" "io-sock")
 openrc_confd["io-sock"]='
 # io-sock config for virtio network adapters
 io_sock_args="-m phy -m pci -d vtnet_pci"
