@@ -13,12 +13,13 @@ readonly E_PRESET=3
 readonly E_DEPS=4
 readonly E_BUILD=5
 
-program_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
 # global variables
+script_path="$(realpath -e -- "${BASH_SOURCE[0]}")"
+script_dir="$(dirname -- "${script_path}")"
 preset_path=""
 preset_name=""
 out_dir="./out"
+datadir=""
 fakeroot_save=""
 scripts_dir=""
 common_dir=""
@@ -135,6 +136,9 @@ Options:
   --keep-tmp      Keep the temporary build directory after a successful build.
                   A failed build always keeps it, and prints where.
 
+Data directory: $MKDISTRO_DATADIR, else next to the mkdistro script. See
+README.md.
+
 EOF
 }
 
@@ -189,13 +193,29 @@ on_exit() {
   return "${status}"
 }
 
-require_dir() {
-  local what="${1}"
-  local path="${2}"
+find_datadir() {
+  local dir
 
-  if [[ ! -d "${path}" ]]; then
-    die "${E_USAGE}" "${what} directory not found at ${path}; mkdistro needs scripts/ and common/ next to itself"
+  if [[ -n "${MKDISTRO_DATADIR:-}" ]]; then
+    if ! dir="$(realpath -e -- "${MKDISTRO_DATADIR}" 2>/dev/null)"; then
+      die "${E_USAGE}" "MKDISTRO_DATADIR='${MKDISTRO_DATADIR}' does not exist; unset it or point it at a directory containing scripts/ and common/"
+    fi
+    if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
+      datadir="${dir}"
+    else
+      die "${E_USAGE}" "MKDISTRO_DATADIR='${dir}' does not contain scripts/ and common/; unset it to use ${script_dir} instead"
+    fi
+  else
+    dir="${script_dir}"
+    if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
+      datadir="${dir}"
+    else
+      die "${E_USAGE}" "mkdistro data directory not found; tried: (1) \$MKDISTRO_DATADIR (not set), (2) ${dir} (directory of ${script_path}). Set MKDISTRO_DATADIR to a directory containing scripts/ and common/."
+    fi
   fi
+
+  scripts_dir="${datadir}/scripts"
+  common_dir="${datadir}/common"
 }
 
 require_tools() {
@@ -938,10 +958,7 @@ preset_name="$(basename -- "${preset_path}")"
 
 out_dir="$(realpath -m -- "${out_dir}")" || die "${E_USAGE}" "cannot resolve output directory: ${out_dir}"
 
-require_dir "scripts" "${program_dir}/scripts"
-require_dir "common" "${program_dir}/common"
-scripts_dir="${program_dir}/scripts"
-common_dir="${program_dir}/common"
+find_datadir
 
 read_preset
 validate_preset

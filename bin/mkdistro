@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#
+# Installed entrypoint for mkdistro. Self-locating: resolves this script's
+# real path, then execs ../share/mkdistro/mkdistro relative to it, so the
+# installed tree can be relocated (under DESTDIR or otherwise) without
+# editing any file.
+
+set -Eeuo pipefail
+
+self="$(realpath -e -- "${BASH_SOURCE[0]}")"
+real="$(realpath -e -- "$(dirname -- "${self}")/../share/mkdistro/mkdistro")"
+exec "${real}" "$@"
