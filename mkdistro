@@ -19,7 +19,7 @@ script_dir="$(dirname -- "${script_path}")"
 preset_path=""
 preset_name=""
 out_dir="./out"
-datadir=""
+data_dir=""
 fakeroot_save=""
 scripts_dir=""
 common_dir=""
@@ -123,7 +123,7 @@ usage() {
   cat <<'EOF'
 mkdistro [OPTIONS] <preset>
 
-  Build a QNX disk image from <preset>, a directory containing a preset.sh.
+  Build a QNX disk image from <preset>, a directory containing a mkdistro.conf.
 
 Options:
   -h, --help      Show this help and exit.
@@ -177,18 +177,7 @@ on_exit() {
     return "${status}"
   fi
 
-  rm -f -- \
-    "${boot_partition_out}" "${boot_partition_filelist}" \
-    "${root_partition_out}" "${root_partition_filelist}" \
-    "${disk_layout_filelist}" \
-    "${fakeroot_save}" "${apk_lockfile}" "${tmp_dir}/ifs.bin"
-  rm -rf -- "${apk_root}"
-
-  local leftover
-  leftover="$(find "${tmp_dir}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')"
-  if [[ "${leftover}" != "$(basename -- "${disk_layout_out}") " ]]; then
-    msg_warn "unexpected files left in ${tmp_dir}: ${leftover}"
-  fi
+  rm -rf "${tmp_dir}"
 
   return "${status}"
 }
@@ -201,31 +190,37 @@ find_datadir() {
       die "${E_USAGE}" "MKDISTRO_DATADIR='${MKDISTRO_DATADIR}' does not exist; unset it or point it at a directory containing scripts/ and common/"
     fi
     if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
-      datadir="${dir}"
+      data_dir="${dir}"
     else
       die "${E_USAGE}" "MKDISTRO_DATADIR='${dir}' does not contain scripts/ and common/; unset it to use ${script_dir} instead"
     fi
   else
     dir="${script_dir}"
     if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
-      datadir="${dir}"
+      data_dir="${dir}"
     else
       die "${E_USAGE}" "mkdistro data directory not found; tried: (1) \$MKDISTRO_DATADIR (not set), (2) ${dir} (directory of ${script_path}). Set MKDISTRO_DATADIR to a directory containing scripts/ and common/."
     fi
   fi
 
-  scripts_dir="${datadir}/scripts"
-  common_dir="${datadir}/common"
+  scripts_dir="${data_dir}/scripts"
+  common_dir="${data_dir}/common"
 }
 
 require_tools() {
   stage="tools"
 
-  local -a required=(fakeroot apk sed curl awk find numfmt mktemp realpath getopt)
+  local -a required=(
+    # System tools
+    fakeroot apk sed curl awk find numfmt mktemp realpath getopt
+    # SDP tools
+    diskimage mkfatfsimg mkqnx6fsimg mkshadow
+    # Image gen tools
+    mkdyifs
+  )
   local -a missing=()
   local tool
 
-  required+=(diskimage mkfatfsimg mkqnx6fsimg mkshadow)
   if [[ "${image_format}" == "qcow2" ]]; then
     required+=(qemu-img)
   fi
@@ -668,6 +663,13 @@ generate_partitions() {
   generate_root_partition "${root_sectors}"
 }
 
+generate_ifs() {
+  pushd "${tmp_dir}" >/dev/null
+  MKIFS_PATH="${apk_root}/usr/bin/:${apk_root}/usr/lib/:${apk_root}/usr/lib/dll/:${apk_root}/boot/sys" \
+    mkdyifs "${preset_path}/mkdyifs.conf" "${tmp_dir}"
+  popd >/dev/null
+}
+
 copy_overlay() {
   in_fakeroot install -d -m0775 -o 0 -g 0 -- "${apk_root}"
 
@@ -797,8 +799,7 @@ build_image() {
   make_apk_root
   configure_openrc
   setup_passwd
-  #TODO: mydyifs
-  echo "" >"${tmp_dir}/ifs.bin"
+  generate_ifs
 
   generate_partitions
   generate_image
@@ -853,14 +854,14 @@ read_preset() {
 
   if [[ ! -d "${preset_path}" ]]; then
     die "${E_PRESET}" "preset at '${preset_path}' does not exist"
-  elif [[ ! -e "${preset_path}/preset.sh" ]]; then
-    die "${E_PRESET}" "preset at '${preset_path}' does not contain a 'preset.sh' file"
+  elif [[ ! -e "${preset_path}/mkdistro.conf" ]]; then
+    die "${E_PRESET}" "preset at '${preset_path}' does not contain a 'mkdistro.conf' file"
   fi
 
   cd -- "${preset_path}" || die "${E_PRESET}" "failed to cd to '${preset_path}'"
 
-  # shellcheck source=presets/x86_64-qemu/preset.sh disable=SC1091
-  . "${preset_path}/preset.sh" || die "${E_PRESET}" "can't source '${preset_path}/preset.sh'"
+  # shellcheck source=presets/x86_64-qemu/mkdistro.conf disable=SC1091
+  . "${preset_path}/mkdistro.conf" || die "${E_PRESET}" "can't source '${preset_path}/mkdistro.conf'"
 }
 
 make_work_dir() {
@@ -969,7 +970,5 @@ if ! mkdir -p -- "${out_dir}"; then
 fi
 
 make_work_dir
-
 build_image
-
 copy_results

@@ -1,3 +1,3 @@
 [fat=32]
 EFI/BOOT/BOOTAA64.EFI=ifs.bin
-
+procnto-smp-instr.sym=procnto-smp-instr.sym

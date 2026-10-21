@@ -180,6 +180,11 @@ if ! "${APK[@]}" update; then
   msg_error "apk update failed; check the repositories and signing keys"
 fi
 
+#TODO: ensure NOTHING puts files into /var/run right now there are a few so we have to hack this here
+if ! "${APK[@]}" add --no-scripts filesystem; then
+  msg_error "apk add failed; check that the packages listed in the preset resolve"
+fi
+
 # Translate apk_packages array into valid world file
 if ! : >"${apk_root}/etc/apk/world"; then
   msg_error "unable to write ${apk_root}/etc/apk/world"
@@ -191,9 +196,8 @@ for pkg in "${apk_packages[@]}"; do
 done
 sed -i 's:[[:space:]]*::g' "${apk_root}/etc/apk/world"
 
-# TODO: ensure NOTHING puts files into /var/run right now there are a few so we have to hack this here
-if ! "${APK[@]}" add --no-scripts filesystem; then
-  msg_error "apk add filesystem failed; check that the packages listed in the preset resolve"
+if ! "${APK[@]}" add --no-scripts; then
+  msg_error "apk add failed; check that the packages listed in the preset resolve"
 fi
 
 # Dump lock file

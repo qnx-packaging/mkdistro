@@ -37,10 +37,7 @@ print where it is.
 
 ## Presets
 
-See `presets/x86_64-qemu/preset.sh`. Settings include `arch`,
-`boot_partition_type`, `boot_partition_size`, `image_size`, `image_format`,
-`image_inodes`, `repositories`, `local_repositories`, `keys`, `packages`,
-`users`, `groups`, `openrc_services` and `openrc_confd`.
+See `preset`
 
 A preset directory may also contain an `overlay/` directory, whose contents are
 copied into the root filesystem.
