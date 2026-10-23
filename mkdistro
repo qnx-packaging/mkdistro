@@ -55,6 +55,7 @@ users=()
 groups=()
 openrc_services=()
 declare -A openrc_confd=()
+declare -A file_permissions=()
 
 preset_errors=()
 
@@ -428,6 +429,33 @@ _check_confd_key() {
   return 1
 }
 
+_check_file_permissions_entry() {
+  local entry="${1}"
+  # Check that it matches format "0:0:755" "<uid>:<gid>:<file permission octals>"
+
+  if [[ ! "${entry}" =~ ^[0-9]+:[0-9]+:[0-7]{3,4}$ ]]; then
+    check_failure="not a valid permissions entry (uid:gid:octal-mode)"
+    return 1
+  fi
+  return 0
+}
+
+_check_file_permissions_key() {
+  local key="${1}"
+  # Check that path is absolute
+
+  if [[ "${key}" != /* ]]; then
+    check_failure="'${key}' is not an absolute path"
+    return 1
+  fi
+
+  if [[ "${key}" == *".."* ]]; then
+    check_failure="'${key}' must not contain '..'"
+    return 1
+  fi
+  return 0
+}
+
 validate_users_and_groups() {
   local -A user_names=() user_uids=() group_names=() group_gids=()
   local -a f=()
@@ -679,7 +707,26 @@ copy_overlay() {
       msg_error "failed to copy overlay from ${preset_path}/overlay"
     fi
 
-    #TODO: file permissions
+    for filename in "${!file_permissions[@]}"; do
+      # Read permissions
+      local fields=()
+      IFS=: read -r -a fields <<<"${file_permissions["${filename}"]}"
+      local uid="${fields[0]:-}"
+      local gid="${fields[1]:-}"
+      local permissions="${fields[2]:-}"
+      local file_path="${apk_root}${filename}"
+
+      # Prevent path traversal
+      if ! [[ "$(realpath -qm -- "${file_path}")" == "${apk_root}"* ]]; then
+        msg_error "Unable to set permissions for ${file_path}, file \"${filename}\" outside of ${apk_root}"
+      elif ! [[ -e "${file_path}" ]]; then
+        msg_error "Unable to set permissions for ${file_path}, file \"${filename}\" does not exist"
+      else
+        in_fakeroot chown -fh -- "${uid}:${gid}" "${file_path}"
+        in_fakeroot chmod -f -- "${permissions}" "${file_path}"
+      fi
+    done
+
   fi
 
 }
@@ -845,6 +892,12 @@ validate_preset() {
   fi
 
   assert_arr_keys openrc_confd _check_confd_key
+
+  # file_permissions is optional: an overlay without it keeps default ownership/mode
+  assert_arr_keys file_permissions _check_file_permissions_key
+  if [[ ${#file_permissions[@]} -gt 0 ]]; then
+    assert_arr_each file_permissions _check_file_permissions_entry
+  fi
 
   report_preset_errors
 }

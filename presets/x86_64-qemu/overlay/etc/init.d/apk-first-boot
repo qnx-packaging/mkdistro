@@ -1,0 +1,41 @@
+#!/usr/bin/openrc-run
+
+# The first boot init service
+
+directory="/lib/apk/exec"
+
+depend() {
+  need io-sock
+  before *
+}
+
+start() {
+  rm -f /etc/runlevels/*/"${RC_SVCNAME}"
+  local rc=0
+  ebegin "Starting ${RC_SVCNAME}"
+
+  tar xf /lib/apk/db/scripts.tar.gz
+
+  IFS=$'\n'
+  for trigger in $(cat /usr/lib/apk/db/triggers); do
+    digest=${trigger%%" "*} # Digest is uniq to the pkg
+    args=${trigger#*" "}    # arguments to pass to the trigger
+    # This is black magic
+    # 1. look up digest + some buffer
+    # 2. find the pkgname
+    # 4. find the trigger for that pkg
+    # 5. run it
+    pkgname=$(grep -A 10 "${digest}" /usr/lib/apk/db/installed | grep -m 1 "P:" | cut -d':' -f2)
+    cmd=$(find . -name "${pkgname}*.trigger")
+    echo "Running ${cmd} ${args}"
+    sh -e -c "${cmd} ${args}"
+  done
+
+  for trigger in *.post-install; do
+    echo "Running ${trigger}"
+    sh -e "${trigger}"
+  done
+
+  eend "${rc}"
+  shutdown
+}
