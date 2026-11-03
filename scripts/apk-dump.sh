@@ -34,6 +34,7 @@ fi
 # shellcheck disable=SC2086 # getopt has already quoted each field
 eval set -- "${PARSED_OPTIONS}"
 
+: "${ABUILD_USERDIR:=${HOME}/.abuild}"
 apk_keys=()
 apk_repos=()
 apk_root=""
@@ -145,14 +146,14 @@ for key_url in "${apk_keys[@]}"; do
   abuild)
     abuild_key="${key_url#abuild://}"
     if [[ "${abuild_key}" == "default" ]]; then
-      abuild_conf="${HOME}/.abuild/abuild.conf"
+      abuild_conf="${ABUILD_USERDIR}/abuild.conf"
       if [[ ! -e "${abuild_conf}" ]]; then
         msg_error "abuild key 'default' needs ${abuild_conf} but it does not exist"
       fi
       # shellcheck disable=SC1090 # user-owned abuild config, path fixed by HOME
       abuild_key="$( (source "${abuild_conf}" && echo "${PACKAGER_PRIVKEY}") ).pub"
     else
-      abuild_key="${HOME}/.abuild/${abuild_key}"
+      abuild_key="${ABUILD_USERDIR}/${abuild_key}"
     fi
     if [[ ! -e "${abuild_key}" ]]; then
       msg_error "abuild signing key ${abuild_key} does not exist"
