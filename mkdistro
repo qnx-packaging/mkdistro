@@ -633,15 +633,16 @@ generate_boot_partition() {
 
   if [[ "${boot_partition_type}" == "efi" && "${boot_partition_layout}" == "" ]]; then
     layout_path="${common_dir}/efi_${arch}.build"
+  else
+    layout_path="${preset_path}/${boot_partition_layout}.build"
   fi
-  #TODO: support custom partition layouts
 
   if [[ ! -s "${layout_path}" ]]; then
     msg_error "no boot partition layout for boot_partition_type='${boot_partition_type}' (custom layouts are not supported yet; looked for ${layout_path:-<none>})"
   fi
 
   echo "[num_sectors=${sectors}]" >"${boot_partition_filelist}"
-  echo "[search=${tmp_dir}]" >>"${boot_partition_filelist}"
+  echo "[search=${tmp_dir}:${apk_root}]" >>"${boot_partition_filelist}"
   cat "${layout_path}" >>"${boot_partition_filelist}"
 
   if ! mkfatfsimg -r "${tmp_dir}" "${boot_partition_filelist}" "${boot_partition_out}"; then
@@ -857,15 +858,12 @@ build_image() {
 validate_preset() {
   assert_oneof arch "x86_64" "aarch64"
   assert_size_or_auto boot_partition_size
-  assert_oneof boot_partition_type efi special
+  #TODO: add a known list of types from diskimage
+  assert boot_partition_type
 
-  if [[ "${boot_partition_type}" == "efi" ]]; then
-    if [[ -n "${boot_partition_layout}" ]]; then
-      #TODO: support custom partition layouts
-      preset_error "boot_partition_layout='${boot_partition_layout}' is not supported yet; leave it empty to use the built-in layout"
-    fi
-  else
-    preset_error "boot_partition_type='${boot_partition_type}' is not implemented yet"
+  # NOTE: efi is special and has a build in layout since it so common
+  if [[ "${boot_partition_type}" != "efi" ]]; then
+    assert boot_partition_layout
   fi
 
   assert_size_or_auto image_size
