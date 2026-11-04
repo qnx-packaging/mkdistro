@@ -1,7 +1,6 @@
 # mkdistro
 
-Builds a QNX disk image from a preset: a small shell file that says which
-packages to install, how big to make the disk, and what services to enable.
+Builds a packaged managed QNX system based on apk-tools
 
 ## Requirements
 
@@ -13,12 +12,6 @@ From the QNX SDK: `diskimage`, `mkfatfsimg`, `mkqnx6fsimg`, `mkshadow`. Source
 `qnxsdp-env.sh` before running mkdistro.
 
 ## Usage
-
-```sh
-./mkdistro presets/x86_64-qemu
-```
-
-The preset is a directory containing a `preset.sh`, given by path.
 
 ```
 mkdistro [OPTIONS] <preset>
@@ -37,44 +30,17 @@ print where it is.
 
 ## Presets
 
-See `preset`
+A preset is a directory that describes one image: which packages go in, how big
+the disk is, who can log in, what starts at boot. Pass it as the only positional
+argument; the directory name becomes the image name. Everything is set by
+variables in the preset's `mkdistro.conf`.
 
-A preset directory may also contain an `overlay/` directory, whose contents are
-copied into the root filesystem.
-
-Only `boot_partition_type="efi"` works. `boot_partition_layout` and
-`mkdynifs_preset` are read but not implemented yet.
-
-## Layout
-
-```text
-mkdistro     main script
-bin/         wrapper used after install
-presets/     preset directories
-scripts/     helpers called by mkdistro
-common/      boot partition layouts
 ```
-
-## Development
-
-```sh
-make lint      # bash -n and shellcheck
-make install   # PREFIX=/usr/local, DESTDIR supported
+preset/
+  mkdistro.conf     variables, described below
+  mkdyifs.conf      arguments for mkdyifs, which builds /ifs
+  overlay/          files copied into the root filesystem
 ```
-
-`make install` puts the script and its data under `$(PREFIX)/share/mkdistro`
-and the `mkdistro` entrypoint in `$(PREFIX)/bin`. Set `MKDISTRO_DATADIR` to a
-directory containing `scripts/` and `common/` to run the data tree from
-elsewhere; by default it is read from next to the script.
-
-## Exit codes
-
-| Code | Meaning                    |
-| ---- | -------------------------- |
-| 2    | bad arguments              |
-| 3    | bad preset                 |
-| 4    | missing dependencies       |
-| 5    | build failed               |
 
 ## License
 
