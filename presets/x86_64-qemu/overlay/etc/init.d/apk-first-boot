@@ -37,5 +37,4 @@ start() {
   done
 
   eend "${rc}"
-  shutdown
 }
