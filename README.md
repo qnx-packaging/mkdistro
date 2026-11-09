@@ -1,15 +1,22 @@
 # mkdistro
 
-Builds a packaged managed QNX system based on apk-tools
+Builds a package-managed QNX 8.0 system based on `apk-tools`
 
 ## Requirements
 
-From your Linux distribution: `fakeroot`, `apk`, `curl`, `sed`, `awk`, `find`,
-`numfmt`, `mktemp`, `realpath`, `getopt`, and `qemu-img` (only for `qcow2`
-output).
+From your Linux distribution: `fakeroot`, `curl`, and `qemu-img` (only for `qcow2` output).
 
-From the QNX SDK: `diskimage`, `mkfatfsimg`, `mkqnx6fsimg`, `mkshadow`. Source
+### Debian / Ubuntu
+  `sudo apt install fakeroot curl qemu-utils`
+### Alpine
+  `doas apk add fakeroot curl qemu-img`
+### Arch
+  `sudo pacman -S fakeroot qemu-img`
+
+From the QNX SDP 8.0.x: `diskimage`, `mkfatfsimg`, `mkqnx6fsimg`, `mkshadow`. Source
 `qnxsdp-env.sh` before running mkdistro.
+
+You need to have built [qsc-apk](https://github.com/qnx-ports/qsc-apk) Follow https://qnx.github.io/codelabs/apk-based-cross-compile steps 1-4
 
 ## Usage
 
@@ -23,7 +30,7 @@ mkdistro [OPTIONS] <preset>
 ```
 
 A successful build writes `<name>_<YYYYMMDD>.<ext>` to the output directory,
-where `<name>` is the preset directory name, and `<ext>` is `img` or `qcow2`.
+where `<name>` is the preset directory name.
 Alongside it goes `<name>_<YYYYMMDD>.lock`, the apk lock file recording the
 exact package versions installed. Failed builds keep the temp directory and
 print where it is.
@@ -31,13 +38,11 @@ print where it is.
 ## Presets
 
 A preset is a directory that describes one image: which packages go in, how big
-the disk is, who can log in, what starts at boot. Pass it as the only positional
-argument; the directory name becomes the image name. Everything is set by
-variables in the preset's `mkdistro.conf`.
+the disk is, who can log in, what starts at boot. [See x86-64 qemu minimal preset](presets/x86_64-qemu/mkdistro.conf)
 
 ```
-preset/
-  mkdistro.conf     variables, described below
+<preset>/
+  mkdistro.conf     image configuration
   mkdyifs.conf      arguments for mkdyifs, which builds /ifs
   overlay/          files copied into the root filesystem
 ```
