@@ -159,7 +159,7 @@ while read -r line; do
       msg_error "Unable to create home directory for ${newname}"
     elif [[ ${newuid} == 0 || ! -d "${root_path}/etc/skel" ]]; then
       continue
-    elif ! cp -rv -- "${root_path}/etc/skel" "${home_dir}/"; then
+    elif ! cp -rv -- "${root_path}/etc/skel/." "${home_dir}"; then
       msg_error "Unable to copy /etc/skel for ${newname}"
     fi
 
