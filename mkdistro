@@ -21,7 +21,7 @@ preset_name=""
 out_dir="./out"
 data_dir=""
 fakeroot_save=""
-scripts_dir=""
+steps_dir=""
 common_dir=""
 tmp_dir=""
 apk_root=""
@@ -188,23 +188,23 @@ find_datadir() {
 
   if [[ -n "${MKDISTRO_DATADIR:-}" ]]; then
     if ! dir="$(realpath -e -- "${MKDISTRO_DATADIR}" 2>/dev/null)"; then
-      die "${E_USAGE}" "MKDISTRO_DATADIR='${MKDISTRO_DATADIR}' does not exist; unset it or point it at a directory containing scripts/ and common/"
+      die "${E_USAGE}" "MKDISTRO_DATADIR='${MKDISTRO_DATADIR}' does not exist; unset it or point it at a directory containing steps/ and common/"
     fi
-    if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
+    if [[ -d "${dir}/steps" && -d "${dir}/common" ]]; then
       data_dir="${dir}"
     else
-      die "${E_USAGE}" "MKDISTRO_DATADIR='${dir}' does not contain scripts/ and common/; unset it to use ${script_dir} instead"
+      die "${E_USAGE}" "MKDISTRO_DATADIR='${dir}' does not contain steps/ and common/; unset it to use ${script_dir} instead"
     fi
   else
     dir="${script_dir}"
-    if [[ -d "${dir}/scripts" && -d "${dir}/common" ]]; then
+    if [[ -d "${dir}/steps" && -d "${dir}/common" ]]; then
       data_dir="${dir}"
     else
-      die "${E_USAGE}" "mkdistro data directory not found; tried: (1) \$MKDISTRO_DATADIR (not set), (2) ${dir} (directory of ${script_path}). Set MKDISTRO_DATADIR to a directory containing scripts/ and common/."
+      die "${E_USAGE}" "mkdistro data directory not found; tried: (1) \$MKDISTRO_DATADIR (not set), (2) ${dir} (directory of ${script_path}). Set MKDISTRO_DATADIR to a directory containing steps/ and common/."
     fi
   fi
 
-  scripts_dir="${data_dir}/scripts"
+  steps_dir="${data_dir}/steps"
   common_dir="${data_dir}/common"
 }
 
@@ -661,7 +661,7 @@ generate_root_partition() {
   fi
   # Reads only, so the save file is not written back: the filelist must not
   # change the staged root or its staging.
-  fakeroot -i "${fakeroot_save}" -- "${scripts_dir}/filelist-gen.sh" "${apk_root}" "${root_partition_filelist}"
+  fakeroot -i "${fakeroot_save}" -- "${steps_dir}/filelist-gen.sh" "${apk_root}" "${root_partition_filelist}"
 
   size="$(from_bytes $((sectors * 512)))"
   msg "Generating root partition with size ${size}"
@@ -733,7 +733,7 @@ copy_overlay() {
 }
 
 setup_passwd() {
-  in_fakeroot "${scripts_dir}/passwd-gen.sh" "${apk_root}" \
+  in_fakeroot "${steps_dir}/passwd-gen.sh" "${apk_root}" \
     <(printf '%s\n' "${users[@]}") <(printf '%s\n' "${groups[@]}")
 }
 
@@ -742,12 +742,12 @@ configure_openrc() {
   # Enable top level services
   for openrc_service in "${openrc_services[@]}"; do
     in_fakeroot \
-      "${scripts_dir}/openrc-enable-service.sh" "${apk_root}" "${openrc_service}"
+      "${steps_dir}/openrc-enable-service.sh" "${apk_root}" "${openrc_service}"
   done
 
   for openrc_service in "${!openrc_confd[@]}"; do
     in_fakeroot \
-      "${scripts_dir}/openrc-configure-service.sh" "${apk_root}" "${openrc_service}" <(printf '%s\n' "${openrc_confd[${openrc_service}]}")
+      "${steps_dir}/openrc-configure-service.sh" "${apk_root}" "${openrc_service}" <(printf '%s\n' "${openrc_confd[${openrc_service}]}")
   done
 }
 
@@ -836,7 +836,7 @@ make_apk_root() {
     args+=("--repo" "$(realpath "${repo}")")
   done
 
-  in_fakeroot "${scripts_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
+  in_fakeroot "${steps_dir}/apk-dump.sh" "${args[@]}" "${packages[@]}"
 
   msg "copying local repositories"
   embed_local_repositories
