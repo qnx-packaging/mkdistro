@@ -434,7 +434,7 @@ make_work_dir() {
 #--- results -----------------------------------------------------------------
 
 copy_results() {
-  local date_tag image_ext image_dest lock_dest
+  local date_tag image_ext image_dest lock_dest dest
 
   date_tag="$(date +%Y%m%d)"
   image_ext="${disk_layout_out##*.}"
@@ -444,6 +444,10 @@ copy_results() {
   if [[ ! -s "${apk_lockfile}" ]]; then
     die "expected lock file ${apk_lockfile} to exist after the build"
   fi
+
+  for dest in "${image_dest}" "${lock_dest}"; do
+    [[ ! -e "${dest}" ]] || warning "overwriting existing ${dest}"
+  done
 
   cp -f -- "${disk_layout_out}" "${image_dest}" \
     || die "failed to copy image ${disk_layout_out} to ${image_dest}"

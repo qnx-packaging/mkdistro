@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 
 # Validate a preset's mkdistro.conf
-# Exits 0 when the preset is valid, 1 with one ERROR line per problem when not.
 
-# shellcheck disable=SC2034 # preset variables are read dynamically via
-# preset_var/${!name} and preset_each namerefs, which shellcheck cannot trace
+# shellcheck cannot trace the preset files
+# shellcheck disable=SC2034
 
 set -Eeuo pipefail
 
@@ -217,6 +216,7 @@ validate_preset() {
       preset_check "${entry#*::}" "local_repositories entry '${entry}'" \
         "embed path and repo must be absolute paths without spaces" '^/[^[:space:]]*$'
     fi
+    [[ -d "${entry#*::}" ]] || warning "local repository '${entry#*::}' does not exist"
   done
 
   preset_each users '^[A-Za-z0-9._-]+:[^:]*:[0-9]+:[0-9]+:[^:]*:/:?[A-Za-z0-9._/-]*:[^:]+$' \
@@ -278,8 +278,16 @@ fi
 
 cd -- "${preset_path}" || die "failed to cd to '${preset_path}'"
 
+# Since all variables defined in the preset has a default, sourcing them shouldn't add anything new
+vars_before='' vars_new='' name=''
+vars_before="$(compgen -v | sort)"
 # shellcheck source=/dev/null
 . "${preset_path}/mkdistro.conf" || die "can't source '${preset_path}/mkdistro.conf'"
+vars_new="$(compgen -v | sort | comm -13 <(printf '%s\n' "${vars_before}") -)"
+for name in ${vars_new}; do
+  # shellcheck disable=SC2086 # bash identifiers, one per line, no spaces
+  warning "unknown declaration '${name}' in mkdistro.conf; it has no effect"
+done
 
 # Prints every problem and exits 1 when any were collected.
 validate_preset
