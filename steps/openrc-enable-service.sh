@@ -1,50 +1,36 @@
 #!/usr/bin/env bash
 
 # RUN ME IN FAKEROOT!
-# Activate the designated list of OpenRC services
+# Enable one OpenRC service in the default runlevel
 # TODO support more runlevels, only default for now
 
 set -Eeuo pipefail
 
-function usage() {
-  echo "openrc-enable-service [APKROOT] [SERVICE]
+PROG="openrc-setup"
+# shellcheck source=steps/prelude.sh
+source "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/prelude.sh"
 
+usage() {
+  echo "openrc-enable-service.sh [APKROOT] [SERVICE]
     [APKROOT] location to write files to
-    [SERVICE] service to enable
-"
-}
-
-function msg() {
-  echo "[openrc-setup] $*"
-}
-
-function msg_error() {
-  printf '[openrc-setup] ERROR: %s\n' "${1}" >&2
-  exit 1
+    [SERVICE] service to enable"
 }
 
 if (($# != 2)); then
   usage >&2
-  msg_error "expected an APKROOT and a SERVICE, got $#: $*"
+  die "expected an APKROOT and a SERVICE, got $#: $*"
 fi
 
-apk_root=$1
-service=$2
+apk_root="$1"
+service="$2"
 
-if ! [[ -d ${apk_root} ]]; then
-  msg_error "bad out dir at ${apk_root}"
-fi
+[[ -d "${apk_root}" ]] || die "bad out dir at ${apk_root}"
+[[ -x "${apk_root}/etc/init.d/${service}" ]] ||
+  die "service ${service} is not installed: no executable /etc/init.d/${service} in ${apk_root}"
 
-if ! [[ -x "${apk_root}/etc/init.d/${service}" ]]; then
-  msg_error "service ${service} is not installed: no executable /etc/init.d/${service} in ${apk_root}"
-fi
-
-# First create the default runlevel folder
-if ! mkdir -p "${apk_root}/etc/runlevels/default"; then
-  msg_error "unable to create ${apk_root}/etc/runlevels/default"
-fi
+mkdir -p -- "${apk_root}/etc/runlevels/default" \
+  || die "unable to create ${apk_root}/etc/runlevels/default"
 
 msg "Enabling service: ${service}"
-if ! ln -sfn "/etc/init.d/${service}" "${apk_root}/etc/runlevels/default/"; then
-  msg_error "unable to link /etc/init.d/${service} into ${apk_root}/etc/runlevels/default"
-fi
+ln -sfn "/etc/init.d/${service}" "${apk_root}/etc/runlevels/default/" \
+  || die "unable to link /etc/init.d/${service} into ${apk_root}/etc/runlevels/default"

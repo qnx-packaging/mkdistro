@@ -5,25 +5,17 @@
 
 set -Eeuo pipefail
 
-ROOT=""
-FILELIST_DEST=""
+PROG="filelist-gen"
+# shellcheck source=steps/prelude.sh
+source "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/prelude.sh"
 
-function usage() {
-  echo "filelist-gen.sh [APKROOT] [MKQNX6FSIMG_DEST]"
-  echo "  [APKROOT]           location to write files to"
-  echo "  [MKQNX6FSIMG_DEST]  location to write filelist to"
+usage() {
+  echo "filelist-gen.sh [APKROOT] [MKQNX6FSIMG_DEST]
+    [APKROOT]           location to write files to
+    [MKQNX6FSIMG_DEST]  location to write filelist to"
 }
 
-function msg() {
-  echo "[filelist-gen] $*"
-}
-
-function msg_error() {
-  printf '[filelist-gen] ERROR: %s\n' "${1}" >&2
-  exit 1
-}
-
-function generate_filelist() {
+generate_filelist() {
   local root=$1
   local prefix=$2
   local repo_parent=${3-${root}}
@@ -67,25 +59,15 @@ function generate_filelist() {
 
 if (($# != 2)); then
   usage >&2
-  msg_error "expected an APKROOT and an MKQNX6FSIMG_DEST, got $#: $*"
+  die "expected an APKROOT and an MKQNX6FSIMG_DEST, got $#: $*"
 fi
 
-ROOT=$1
-FILELIST_DEST=$2
+root="$1"
+dest="$2"
 
-if [[ ! -d ${ROOT} ]]; then
-  msg_error "APKROOT ${ROOT} is not a directory"
-fi
+[[ -d "${root}" ]] || die "APKROOT ${root} is not a directory"
+touch -- "${dest}" || die "filelist destination ${dest} is not writable"
 
-if [[ ! -e ${FILELIST_DEST} ]]; then
-  if ! : >"${FILELIST_DEST}"; then
-    msg_error "unable to write filelist to ${FILELIST_DEST}"
-  fi
-elif [[ ! -w ${FILELIST_DEST} ]]; then
-  msg_error "filelist destination ${FILELIST_DEST} is not writable"
-fi
-
-msg "Generating filelist for ${ROOT}"
-if ! generate_filelist "${ROOT}" '' "${ROOT}" >>"${FILELIST_DEST}"; then
-  msg_error "failed to generate the filelist for ${ROOT}"
-fi
+msg "Generating filelist for ${root}"
+generate_filelist "${root}" '' "${root}" >>"${dest}" ||
+  die "failed to generate the filelist for ${root}"
