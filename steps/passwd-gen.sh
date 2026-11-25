@@ -8,7 +8,11 @@
 
 set -Eeuo pipefail
 
-function usage() {
+PROG="passwd-gen"
+# shellcheck source=steps/prelude.sh
+source "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/prelude.sh"
+
+usage() {
   echo "passwd-gen.sh [ROOT] [PASSWD_FILE] [GROUP_FILE]
 
     [ROOT]         directory to output generated passwd/shadow/group files
@@ -19,31 +23,38 @@ function usage() {
 
 if (($# != 3)); then
   usage >&2
-  echo "[passwd-gen] ERROR: expected ROOT, PASSWD_FILE and GROUP_FILE, got $#: $*" >&2
-  exit 1
+  die "expected ROOT, PASSWD_FILE and GROUP_FILE, got $#: $*"
 fi
 
 root_path="$1"
 passwd_file="$2"
 groups_file="$3"
 
-shadow_user=""
-shadow_pw=""
+[[ -e "${passwd_file}" ]] || die "passwd_file undefined!"
+[[ -e "${groups_file}" ]] || die "groups_file undefined!"
+[[ -d "${root_path}" ]] || die "bad out dir ${root_path}"
+command -v mkshadow >/dev/null 2>&1 || die "mkshadow command not found. SDP not activated?"
 
-line=""
-home_dir=""
-etc_file=""
-incoming=""
-id_field=""
-pw_entry=""
+users="$(cat "${passwd_file}")"
+groups="$(cat "${groups_file}")"
 
-function prune_replaced() {
+first_entry="$(awk 'NF && $0 !~ /^#/ { print; exit }' <<<"${users}")"
+[[ "${first_entry%%:*}" == "root" ]] ||
+  die "the passwd list must start with a root entry, got: ${first_entry:-<empty>}"
+
+passwd_tmp="$(mktemp)"
+groups_tmp="$(mktemp)"
+shadow_tmp="$(mktemp)"
+shadow_names="$(mktemp)"
+trap 'rm -f -- "${passwd_tmp}" "${groups_tmp}" "${shadow_tmp}" "${shadow_names}"' EXIT
+
+prune_replaced() {
   local target="$1"
   local incoming="$2"
   local id_field="$3"
   local tmp
 
-  touch -- "${target}"
+  touch -- "${target}" || die "Unable to create ${target}"
   tmp="$(mktemp)"
   if ! awk -F: -v excl="${incoming}" -v idf="${id_field}" '
     BEGIN {
@@ -61,61 +72,18 @@ function prune_replaced() {
     }
   ' "${target}" >"${tmp}"; then
     rm -f -- "${tmp}"
-    msg_error "Unable to rewrite ${target}"
+    die "Unable to rewrite ${target}"
   fi
 
   if ! cat -- "${tmp}" >"${target}"; then
     rm -f -- "${tmp}"
-    msg_error "Unable to update ${target}"
+    die "Unable to update ${target}"
   fi
   rm -f -- "${tmp}"
 }
 
-function msg() {
-  echo "[passwd-gen] $*"
-}
-
-msg_error() {
-  printf '[passwd-gen] ERROR: %s\n' "${1}" >&2
-  exit 1
-}
-
-if ! [[ -e "${passwd_file}" ]]; then
-  msg_error "passwd_file undefined!"
-fi
-
-if ! [[ -e "${groups_file}" ]]; then
-  msg_error "groups_file undefined!"
-fi
-
-if ! [[ -d "${root_path}" ]]; then
-  msg_error "bad out dir ${root_path}"
-fi
-
-if ! command -v mkshadow >/dev/null 2>&1; then
-  msg_error "mkshadow command not found. SDP not activated?"
-fi
-
-users="$(cat "${passwd_file}")"
-groups="$(cat "${groups_file}")"
-
-first_entry="$(awk 'NF && $0 !~ /^#/ { print; exit }' <<<"${users}")"
-if [[ "${first_entry%%:*}" != "root" ]]; then
-  msg_error "the passwd list must start with a root entry, got: ${first_entry:-<empty>}"
-fi
-
-passwd_tmp="$(mktemp)"
-groups_tmp="$(mktemp)"
-shadow_tmp="$(mktemp)"
-shadow_names="$(mktemp)"
-trap 'rm -f -- "${passwd_tmp}" "${groups_tmp}" "${shadow_tmp}" "${shadow_names}"' EXIT
-
-newname=""
-newuid=""
-newgid=""
-newhome=""
-newshell=""
 declare -a fields=()
+line=""
 
 while read -r line; do
   if [[ -z ${line} ]] || [[ ${line} =~ ^# ]]; then
@@ -130,9 +98,7 @@ while read -r line; do
   newhome="${fields[5]:-}"
   newshell="${fields[6]:-}"
 
-  if [[ -z ${newshell} ]]; then
-    msg_error "malformed passwd entry, no shell field: ${line}"
-  fi
+  [[ -n ${newshell} ]] || die "malformed passwd entry, no shell field: ${line}"
   echo "${line}" >>"${passwd_tmp}"
 
   # Create home folder for root and regular users; system accounts
@@ -143,32 +109,27 @@ while read -r line; do
     home_dir="${root_path}${newhome}"
 
     # Prevent path traversal
-    if ! [[ "$(realpath -qm -- "${home_dir}")" == "${root_path}"* ]]; then
-      msg_error "Unable to setup ${newname}, home dir \"${home_dir}\" outside of ${root_path}"
-    fi
+    [[ "$(realpath -qm -- "${home_dir}")" == "${root_path}"* ]] ||
+      die "Unable to setup ${newname}, home dir \"${home_dir}\" outside of ${root_path}"
 
     msg "Creating home folder for ${newname} (${newuid}:${newgid})"
 
-    if ! mkdir -p -- "$(dirname -- "${home_dir}")"; then
-      msg_error "Unable to create parent directory for ${newname}"
-    fi
+    mkdir -p -- "$(dirname -- "${home_dir}")" \
+      || die "Unable to create parent directory for ${newname}"
 
     if [[ -e ${home_dir} ]]; then
       msg "Home folder for ${newname} already exists, not copying /etc/skel"
-    elif ! mkdir -p -- "${home_dir}"; then
-      msg_error "Unable to create home directory for ${newname}"
-    elif [[ ! ${newuid} == 0 && -d "${root_path}/etc/skel" ]]; then
-      if ! cp -rv -- "${root_path}/etc/skel/." "${home_dir}"; then
-        msg_error "Unable to copy /etc/skel for ${newname}"
+    else
+      mkdir -p -- "${home_dir}" || die "Unable to create home directory for ${newname}"
+      if [[ ! ${newuid} == 0 && -d "${root_path}/etc/skel" ]]; then
+        cp -rv -- "${root_path}/etc/skel/." "${home_dir}" \
+          || die "Unable to copy /etc/skel for ${newname}"
       fi
     fi
 
-    if ! chmod 750 -- "${home_dir}"; then
-      msg_error "Unable to set mode on ${home_dir}"
-    fi
-    if ! chown -R -- "${newuid}:${newgid}" "${home_dir}"; then
-      msg_error "Unable to set ownership on ${home_dir}"
-    fi
+    chmod 750 -- "${home_dir}" || die "Unable to set mode on ${home_dir}"
+    chown -R -- "${newuid}:${newgid}" "${home_dir}" \
+      || die "Unable to set ownership on ${home_dir}"
   fi
 done <<<"${users}"
 
@@ -186,13 +147,10 @@ while IFS=: read -r pw_entry; do
     continue
   fi
 
-  if ! mkshadow -u "${shadow_user}" -p "${shadow_pw}" >>"${shadow_tmp}"; then
-    msg_error "mkshadow failed for ${shadow_user}"
-  fi
+  mkshadow -u "${shadow_user}" -p "${shadow_pw}" >>"${shadow_tmp}" || die "mkshadow failed for ${shadow_user}"
   echo "${shadow_user}" >>"${shadow_names}"
 done <"${passwd_tmp}"
 
-group_gid=""
 declare -a gfields=()
 
 while read -r line; do
@@ -202,11 +160,7 @@ while read -r line; do
 
   gfields=()
   IFS=: read -r -a gfields <<<"${line}"
-  group_gid="${gfields[2]:-}"
-
-  if [[ -z ${group_gid} ]]; then
-    msg_error "malformed group entry, no gid field: ${line}"
-  fi
+  [[ -n ${gfields[2]:-} ]] || die "malformed group entry, no gid field: ${line}"
   echo "${line}" >>"${groups_tmp}"
 done <<<"${groups}"
 
@@ -222,13 +176,9 @@ if [[ -s "${shadow_tmp}" ]]; then
 fi
 
 for etc_file in passwd group shadow; do
-  if ! chown 0:0 -- "${root_path}/etc/${etc_file}"; then
-    msg_error "Unable to set ownership on /etc/${etc_file}"
-  fi
+  chown 0:0 -- "${root_path}/etc/${etc_file}" \
+    || die "Unable to set ownership on /etc/${etc_file}"
 done
-if ! chmod 0644 -- "${root_path}/etc/passwd" "${root_path}/etc/group"; then
-  msg_error "Unable to set mode on /etc/passwd and /etc/group"
-fi
-if ! chmod 0640 -- "${root_path}/etc/shadow"; then
-  msg_error "Unable to set mode on /etc/shadow"
-fi
+chmod 0644 -- "${root_path}/etc/passwd" "${root_path}/etc/group" \
+  || die "Unable to set mode on /etc/passwd and /etc/group"
+chmod 0640 -- "${root_path}/etc/shadow" || die "Unable to set mode on /etc/shadow"
